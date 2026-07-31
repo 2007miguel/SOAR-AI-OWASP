@@ -1,0 +1,336 @@
+================================================================================
+CONTRATO DE ENTRADAS / SALIDAS — engine ↔ assurance-coordinator
+Qué envía el engine y qué responde el coordinator (Etapa 1, HITL)
+Archivo: CONTRATO_IO_engine_coordinator.txt
+================================================================================
+
+
+SECCIÓN 0 — PROPÓSITO Y ALCANCE
+────────────────────────────────────────────────────────────────────────────────
+
+Este documento describe, endpoint por endpoint, el contrato de datos entre el
+engine y el assurance-coordinator: qué cuerpo (input) puede enviar el engine y
+qué cuerpo (output) devuelve el coordinator.
+
+Refleja EXACTAMENTE los modelos pydantic implementados hoy en el coordinator
+(contracts/, port/assurance_api.py) y su alineación con los del engine
+(validation_engine/contracts/assurance.py, api/dto.py, modules/m7_verdict_engine.py).
+
+IMPORTANTE — estado de la integración:
+  - El coordinator EXPONE estos endpoints y son funcionales (verificado con tests).
+  - El engine todavía NO tiene el cliente HTTP que los invoque (no hay httpx ni
+    URL del coordinator en su config). Por eso este contrato describe lo que el
+    engine DEBE enviar/recibir cuando se implemente la fase de conexión, no un
+    tráfico que ya ocurra.
+  - Todos los endpoints del coordinator son un canal INTERNO engine↔coordinator.
+    El frontend/usuario nunca los llama: el usuario habla siempre con el engine.
+
+Base URL del coordinator:  http://<coordinator-host>:8100/api/v1
+Puerto por defecto:        8100  (configurable con PORT)
+Autenticación:             ninguna en Etapa 1 (red interna net-core segmentada).
+
+
+SECCIÓN 1 — VISTA GENERAL DEL FLUJO
+────────────────────────────────────────────────────────────────────────────────
+
+  Usuario ─► Frontend ─► ENGINE ─────────────► COORDINATOR ──────► ENGINE
+                                (canal interno)              (callback)
+
+  1. El caso llega a AWAITING_ASSURANCE en el engine (M5 emitió el checklist).
+  2. Engine  ──POST /checklist──►  Coordinator        (crea la sesión)
+  3. (N veces) el usuario atestigua en el frontend → engine reenvía:
+     Engine  ──POST /attest/{id}──►  Coordinator      (merge parcial de evidencia)
+  4. Cuando todos los controles críticos están atestiguados:
+     Coordinator ──POST /assessments/{id}/resume──►  Engine   (callback, 1 sola vez)
+  5. (Opcional) Engine  ──GET /status/{id}──►  Coordinator     (polling de respaldo)
+
+  Nota: pasos 2–4 son el "proxy" de evidencia. El engine sigue siendo la única
+  cara pública; el coordinator es el acumulador y (futuro) dueño de la evidencia.
+
+
+SECCIÓN 2 — TIPOS COMPARTIDOS (BLOQUES REUTILIZADOS)
+────────────────────────────────────────────────────────────────────────────────
+
+2.1  AttestationInput            (una attestación por control)
+     Coordinator: contracts/evidence.py · Engine: api/dto.py (mismos campos)
+
+       {
+         "status": "implemented" | "partial" | "not_implemented",   // requerido
+         "evidence": <string|null>,            // texto libre (opcional)
+         "assurance_method": <string|null>     // ASSUR-ID usado (opcional)
+       }
+
+2.2  ChecklistItem               (un control a evidenciar)
+     Coordinator: contracts/checklist.py · Engine: api/dto.py ChecklistItemOut
+
+       {
+         "control_id": <string>,          // p.ej. "CTRL-PROMPT-01"
+         "why": [<ASI-ID>, ...],          // ASIs que exigen el control, p.ej. ["ASI01"]
+         "category": <string>,            // herramienta_tecnica | revision_config | proceso_humano
+         "suggested_assur": [<ASSUR-ID>]  // métodos recomendados, p.ej. ["ASSUR-01"]
+       }
+
+2.3  ToolResult                  (evidencia de conector — vacío/no usado en Etapa 1)
+     Coordinator: contracts/evidence.py · Engine: contracts/assurance.py
+
+       {
+         "connector": <string>,           // p.ej. "connector-zap"
+         "control_id": <string|null>,
+         "asi": <string|null>,
+         "verdict": <string>,             // "pass" | "fail" | "findings" (local, no del agente)
+         "findings": [ {..}, ... ],
+         "raw_ref": <string|null>
+       }
+
+
+SECCIÓN 3 — ENDPOINT 1:  POST /api/v1/checklist
+────────────────────────────────────────────────────────────────────────────────
+
+Llamado por:   ENGINE, cuando el caso entra en AWAITING_ASSURANCE.
+Propósito:     crear la sesión de aseguramiento en coordinator_sessions.
+
+── INPUT (lo que envía el engine) — ChecklistBundle ────────────────────────────
+
+  {
+    "assessment_id": <string>,           // requerido — id del caso en el engine
+    "active_asi": [<ASI-ID>, ...],       // ASIs activos del análisis, p.ej. ["ASI01","ASI02"]
+    "items": [ <ChecklistItem>, ... ]    // un item por control crítico (ver 2.2)
+  }
+
+  Ejemplo:
+  {
+    "assessment_id": "a1b2c3",
+    "active_asi": ["ASI01", "ASI02"],
+    "items": [
+      { "control_id": "CTRL-PROMPT-01", "why": ["ASI01"],
+        "category": "herramienta_tecnica", "suggested_assur": ["ASSUR-01"] },
+      { "control_id": "CTRL-MON-01", "why": ["ASI01", "ASI06"],
+        "category": "revision_config", "suggested_assur": [] }
+    ]
+  }
+
+  Origen en el engine: cada item se corresponde 1:1 con un elemento de
+  ctx.assurance.checklist (ChecklistItemOut). Los campos coinciden en nombre.
+
+── OUTPUT OK — HTTP 201 Created ────────────────────────────────────────────────
+
+  {
+    "assessment_id": <string>,
+    "controls_pending": <int>,           // = número de items del checklist
+    "summary": [                         // resumen legible para logs/tracking
+      {
+        "control_id": <string>,
+        "category": <string>,
+        "why": [<ASI-ID>, ...],
+        "suggested_assur": [<ASSUR-ID>, ...],
+        "needs_tool": <bool>             // true si suggested_assur no está vacío
+      }, ...
+    ]
+  }
+
+── OUTPUT ERROR ────────────────────────────────────────────────────────────────
+
+  409 Conflict   → ya existe una sesión para ese assessment_id (idempotencia).
+                   El coordinator NO sobrescribe attestaciones ya acumuladas.
+                   { "detail": "Coordinator session for '<id>' already exists" }
+
+  422 Unprocessable Entity → el cuerpo no valida contra ChecklistBundle
+                   (FastAPI/pydantic estándar).
+
+
+SECCIÓN 4 — ENDPOINT 2:  POST /api/v1/attest/{assessment_id}
+────────────────────────────────────────────────────────────────────────────────
+
+Llamado por:   ENGINE, reenviando cada actualización HITL del usuario.
+Propósito:     merge parcial de la evidencia; detectar completitud; disparar resume.
+Idempotencia:  se puede llamar N veces; los campos se acumulan/sobrescriben.
+
+── INPUT (lo que envía el engine) — AttestRequest ──────────────────────────────
+
+  {
+    "attestations": {                    // mapa control_id → AttestationInput (ver 2.1)
+      "<CTRL-ID>": { "status": "...", "evidence": "...", "assurance_method": "..." }
+    },
+
+    // Flags globales del caso. null / ausente = "no cambiar" (merge parcial).
+    "incident_response_plan":        <bool|null>,
+    "red_teaming_done":              <bool|null>,
+    "assurance_methods_used":        [<ASSUR-ID>, ...],   // se UNEN a las existentes
+
+    // Señales de veredicto que consume M7 del engine (HITL en Etapa 1).
+    // null / ausente = "no cambiar".
+    "red_teaming_critical_findings": <bool|null>,   // hallazgos críticos sin mitigar
+    "supply_chain_unverified":       <bool|null>,   // componentes de cadena sin verificar
+    "production_access":             <bool|null>    // acceso directo a producción
+  }
+
+  Ejemplo (attestación parcial de 1 control + un flag):
+  {
+    "attestations": {
+      "CTRL-PROMPT-01": { "status": "implemented", "evidence": "WAF + prompt guard v2" }
+    },
+    "incident_response_plan": true
+  }
+
+  Ejemplo (cierre: último control + señales de veredicto):
+  {
+    "attestations": {
+      "CTRL-MON-01": { "status": "implemented", "assurance_method": "ASSUR-04" }
+    },
+    "red_teaming_done": true,
+    "red_teaming_critical_findings": false,
+    "supply_chain_unverified": false,
+    "production_access": true,
+    "assurance_methods_used": ["ASSUR-01", "ASSUR-04"]
+  }
+
+  Semántica de merge (coordinator):
+    - attestations: se hace {existentes, ...nuevas} (las nuevas ganan por control_id).
+    - assurance_methods_used: UNIÓN ordenada (no reemplaza).
+    - flags booleanos: se sobrescriben SOLO si el valor no es null.
+    - Los tres campos alineados con el engine coinciden en nombre y tipo con
+      AttestRequest / AssuranceLayer del engine (no hay traducción).
+
+── OUTPUT OK — HTTP 200 OK ─────────────────────────────────────────────────────
+
+  {
+    "assessment_id": <string>,
+    "is_ready": <bool>,                  // true cuando TODOS los control_id del
+                                         //   checklist tienen alguna attestación
+    "pending_controls": [<CTRL-ID>, ...] // controles del checklist aún sin attestación
+  }
+
+  Efecto colateral cuando is_ready pasa de false→true (transición pending→ready):
+    - la sesión se marca status="ready" (mark_ready).
+    - se dispara UNA sola vez el callback de resume al engine (en background;
+      ver Sección 6). Llamadas posteriores con is_ready=true NO re-disparan.
+
+  Definición de "ready" (Etapa 1): existe UNA entrada de attestación por cada
+  control del checklist, sin importar su status (implemented/partial/
+  not_implemented). El VEREDICTO (apto/no apto según esos status y las señales)
+  lo calcula M7 en el engine, no el coordinator.
+
+── OUTPUT ERROR ────────────────────────────────────────────────────────────────
+
+  404 Not Found  → no existe sesión para ese assessment_id (nunca llegó el checklist).
+                   { "detail": "No coordinator session for assessment '<id>'" }
+
+  422 Unprocessable Entity → el cuerpo no valida contra AttestRequest.
+
+
+SECCIÓN 5 — ENDPOINT 3:  GET /api/v1/status/{assessment_id}
+────────────────────────────────────────────────────────────────────────────────
+
+Llamado por:   ENGINE (polling opcional / respaldo si perdió el callback resume).
+Propósito:     consultar completitud y estado sin modificar nada.
+
+── INPUT ───────────────────────────────────────────────────────────────────────
+
+  (ninguno; el assessment_id va en la ruta)
+
+── OUTPUT OK — HTTP 200 OK ─────────────────────────────────────────────────────
+
+  {
+    "assessment_id": <string>,
+    "is_ready": <bool>,
+    "pending_controls": [<CTRL-ID>, ...],
+    "status": "pending" | "ready"        // estado de la sesión del coordinator
+  }
+
+── OUTPUT ERROR ────────────────────────────────────────────────────────────────
+
+  404 Not Found  → no existe sesión para ese assessment_id.
+                   { "detail": "No coordinator session for assessment '<id>'" }
+
+
+SECCIÓN 6 — CALLBACK:  coordinator ─► engine  (POST .../resume)
+────────────────────────────────────────────────────────────────────────────────
+
+Llamado por:   COORDINATOR, automáticamente, en la transición pending→ready.
+Destino:       POST {ENGINE_URL}/api/v1/assessments/{assessment_id}/resume
+Cliente:       httpx, timeout 30s, en background (no bloquea la respuesta de /attest).
+Tolerancia:    si el engine no responde o da error HTTP, se registra en log y NO
+               se relanza la excepción (el engine puede reconciliar con GET /status).
+
+── ESTADO ACTUAL (Etapa 1) ─────────────────────────────────────────────────────
+
+  Cuerpo enviado:  VACÍO (solo la URL con el assessment_id).
+  Respuesta que espera del engine: 2xx (se registra el status code).
+
+  Limitación conocida: el engine, al recibir /resume, revalida is_ready contra SU
+  PROPIO ctx.assurance.attestations (su base de datos), que en este diseño NO
+  contiene las attestaciones recogidas por el coordinator. Por eso, tal cual, el
+  engine respondería 400 "Not all critical controls have been attested".
+
+── LO QUE FALTA PARA LA FASE DE CONEXIÓN (recomendado) ─────────────────────────
+
+  El coordinator debe ENTREGAR la evidencia consolidada. Ya la construye:
+  PartialStore.build_bundle(assessment_id) → EvidenceBundle. Falta transmitirla.
+
+  Contrato sugerido del cuerpo del resume (EvidenceBundle):
+
+  {
+    "assessment_id": <string>,
+    "attestations": {                    // control_id → AttestationInput
+      "<CTRL-ID>": { "status": "...", "evidence": "...", "assurance_method": "..." }
+    },
+    "tool_results": [ <ToolResult>, ... ],       // [] en Etapa 1
+    "red_teaming_done":              <bool>,
+    "incident_response_plan":        <bool>,
+    "assurance_methods_used":        [<ASSUR-ID>, ...],
+    "red_teaming_critical_findings": <bool>,     // consumido por M7 (NOT_APT e)
+    "supply_chain_unverified":       <bool>,     // consumido por M7 (NOT_APT d)
+    "production_access":             <bool>      // consumido por M7 (NOT_APT d)
+  }
+
+  Del lado ENGINE haría falta que /resume acepte este cuerpo y poble
+  ctx.assurance.* con él antes de revalidar is_ready y correr M7 + Reporter.
+  (Cambio en el engine, fuera del alcance de esta etapa del coordinator.)
+
+
+SECCIÓN 7 — MAPA DE CAMPOS ↔ USO EN M7 (POR QUÉ IMPORTA CADA UNO)
+────────────────────────────────────────────────────────────────────────────────
+
+  CAMPO (evidencia)                 USO EN EL VEREDICTO M7 DEL ENGINE
+  ────────────────────────────────  ──────────────────────────────────────────────
+  attestations[CTRL].status         Control crítico de ASI de alta severidad en
+                                     "not_implemented" → NOT_APT. Todos
+                                     "implemented" → condición de APT.
+  attestations["CTRL-MON-01"]        Si no está implementado (logging inmutable) →
+                                     NOT_APT.
+  incident_response_plan             false → NOT_APT.
+  red_teaming_done                   Requerido true si hay ASI de alta severidad
+                                     activos, para APT (si no → RESTRICTIONS).
+  red_teaming_critical_findings      true (con red_teaming_done) → NOT_APT.
+  supply_chain_unverified            true + production_access true → NOT_APT.
+  production_access                  (ver arriba; combina con supply_chain).
+  assurance_methods_used             Trazabilidad de métodos ASSUR aplicados.
+  tool_results                       (Etapa 2) evidencia automatizada de conectores.
+
+  ASI de alta severidad (high_severity_risks): ASI01, ASI02, ASI03, ASI05, ASI06.
+  Nota: CTRL-DEP-05 debe estar "implemented" si el dominio es de alto riesgo
+  (high_risk_domain) para alcanzar APT; esa condición la evalúa M7 con datos del
+  análisis (no viaja en la evidencia).
+
+
+SECCIÓN 8 — RESUMEN RÁPIDO (TABLA)
+────────────────────────────────────────────────────────────────────────────────
+
+  DIRECCIÓN    MÉTODO Y RUTA                       INPUT              OUTPUT OK
+  ───────────  ──────────────────────────────────  ─────────────────  ─────────────────────
+  engine→coord POST /api/v1/checklist              ChecklistBundle    201 {assessment_id,
+                                                                        controls_pending, summary}
+  engine→coord POST /api/v1/attest/{id}            AttestRequest      200 {assessment_id,
+                                                                        is_ready, pending_controls}
+  engine→coord GET  /api/v1/status/{id}            —                  200 {assessment_id, is_ready,
+                                                                        pending_controls, status}
+  coord→engine POST /api/v1/assessments/{id}/resume  (hoy vacío;      2xx
+                                                     futuro:
+                                                     EvidenceBundle)
+
+  Errores comunes: 404 (sesión inexistente en /attest y /status),
+                   409 (checklist duplicado), 422 (cuerpo inválido).
+
+================================================================================
+FIN DEL DOCUMENTO
+================================================================================

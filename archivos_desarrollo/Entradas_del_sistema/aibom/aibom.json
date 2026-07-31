@@ -1,0 +1,684 @@
+{
+  "aibom_generator_registry": {
+    "required_fields": {
+      "bomFormat": {
+        "type": "string",
+        "required": true,
+        "cyclonedx_path": "bomFormat",
+        "enum": ["CycloneDX"]
+      },
+      "specVersion": {
+        "type": "string",
+        "required": true,
+        "cyclonedx_path": "specVersion",
+        "example": "1.6"
+      },
+      "serialNumber": {
+        "type": "string",
+        "required": false,
+        "cyclonedx_path": "serialNumber",
+        "pattern": "^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+      },
+      "version": {
+        "type": "integer",
+        "required": false,
+        "cyclonedx_path": "version",
+        "minimum": 1,
+        "default": 1
+      }
+    },
+    "metadata": {
+      "primaryPurpose": {
+        "type": "string",
+        "cyclonedx_path": "components[].modelCard.modelParameters.task"
+      },
+      "suppliedBy": {
+        "type": "object",
+        "cyclonedx_path": "components[].supplier"
+      },
+      "standardCompliance": {
+        "type": "not_specified_in_aibom_generator_api_doc",
+        "cyclonedx_path": "not_specified_in_aibom_generator_api_doc"
+      },
+      "domain": {
+        "type": "array<string>",
+        "cyclonedx_path": "components[].tags"
+      },
+      "autonomyType": {
+        "type": "not_specified_in_aibom_generator_api_doc",
+        "cyclonedx_path": "not_specified_in_aibom_generator_api_doc"
+      }
+    },
+    "component_basic": {
+      "name": {
+        "type": "string",
+        "required": true,
+        "cyclonedx_path": "components[].name"
+      },
+      "type": {
+        "type": "string",
+        "required": true,
+        "cyclonedx_path": "components[].type",
+        "enum": [
+          "application",
+          "framework",
+          "library",
+          "container",
+          "platform",
+          "operating-system",
+          "device",
+          "device-driver",
+          "firmware",
+          "file",
+          "machine-learning-model",
+          "data",
+          "cryptographic-asset"
+        ]
+      },
+      "purl": {
+        "type": "string",
+        "cyclonedx_path": "components[].purl"
+      },
+      "description": {
+        "type": "string",
+        "cyclonedx_path": "components[].description"
+      },
+      "licenses": {
+        "type": "array",
+        "cyclonedx_path": "components[].licenses"
+      }
+    },
+    "component_model_card": {
+      "energyConsumption": {
+        "type": "object",
+        "cyclonedx_path": "components[].modelCard.considerations.environmentalConsiderations.energyConsumptions[]"
+      },
+      "hyperparameter": {
+        "type": "object",
+        "cyclonedx_path": "components[].modelCard.modelParameters"
+      },
+      "limitation": {
+        "type": "array<string>",
+        "cyclonedx_path": "components[].modelCard.considerations.technicalLimitations"
+      },
+      "safetyRiskAssessment": {
+        "type": "array<object>",
+        "cyclonedx_path": "components[].modelCard.considerations.ethicalConsiderations"
+      },
+      "typeOfModel": {
+        "type": "object",
+        "cyclonedx_path": "components[].modelCard.modelParameters.approach"
+      },
+      "modelExplainability": {
+        "type": "not_natively_defined_in_cyclonedx_1_6_schema",
+        "cyclonedx_path": "extension_or_property"
+      },
+      "energyQuantity": {
+        "type": "object",
+        "cyclonedx_path": "components[].modelCard.considerations.environmentalConsiderations.energyConsumptions[].activityEnergyCost"
+      },
+      "energyUnit": {
+        "type": "object",
+        "cyclonedx_path": "components[].modelCard.considerations.environmentalConsiderations.energyConsumptions[].activityEnergyCost"
+      },
+      "informationAboutTraining": {
+        "type": "object",
+        "cyclonedx_path": "formulation"
+      },
+      "informationAboutApplication": {
+        "type": "not_specified_in_aibom_generator_api_doc",
+        "cyclonedx_path": "not_specified_in_aibom_generator_api_doc"
+      },
+      "metric": {
+        "type": "array<object>",
+        "cyclonedx_path": "components[].modelCard.quantitativeAnalysis.performanceMetrics"
+      },
+      "metricDecisionThreshold": {
+        "type": "partial_support",
+        "cyclonedx_path": "partial_support"
+      },
+      "modelDataPreprocessing": {
+        "type": "object",
+        "cyclonedx_path": "formulation"
+      },
+      "useSensitivePersonalInformation": {
+        "type": "partial_support",
+        "cyclonedx_path": "components[].modelCard.modelParameters.datasets[].sensitiveData"
+      }
+    },
+    "external_references": {
+      "downloadLocation": {
+        "type": "string",
+        "cyclonedx_path": "externalReferences[].url",
+        "externalReferences[].type": "distribution"
+      }
+    }
+  },
+  "cyclonedx_1_6_aibom_structure": {
+    "$schema": {
+      "type": "string"
+    },
+    "bomFormat": {
+      "type": "string",
+      "required": true,
+      "enum": ["CycloneDX"]
+    },
+    "specVersion": {
+      "type": "string",
+      "required": true,
+      "example": "1.6"
+    },
+    "serialNumber": {
+      "type": "string",
+      "pattern": "^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 1
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "tools": {
+          "type": "object_or_deprecated_array"
+        },
+        "component": {
+          "type": "object",
+          "$ref": "#/definitions/component"
+        },
+        "supplier": {
+          "type": "object",
+          "$ref": "#/definitions/organizationalEntity"
+        },
+        "licenses": {
+          "type": "array",
+          "$ref": "#/definitions/licenseChoice"
+        },
+        "properties": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/property"
+          }
+        }
+      }
+    },
+    "components": {
+      "type": "array",
+      "items": {
+        "type": {
+          "type": "string",
+          "required": true,
+          "enum": [
+            "application",
+            "framework",
+            "library",
+            "container",
+            "platform",
+            "operating-system",
+            "device",
+            "device-driver",
+            "firmware",
+            "file",
+            "machine-learning-model",
+            "data",
+            "cryptographic-asset"
+          ]
+        },
+        "bom-ref": {
+          "type": "string"
+        },
+        "supplier": {
+          "type": "object",
+          "$ref": "#/definitions/organizationalEntity"
+        },
+        "manufacturer": {
+          "type": "object",
+          "$ref": "#/definitions/organizationalEntity"
+        },
+        "authors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/organizationalContact"
+          }
+        },
+        "publisher": {
+          "type": "string"
+        },
+        "group": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string",
+          "required": true
+        },
+        "version": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "purl": {
+          "type": "string"
+        },
+        "licenses": {
+          "type": "array",
+          "$ref": "#/definitions/licenseChoice"
+        },
+        "externalReferences": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/externalReference"
+          }
+        },
+        "pedigree": {
+          "type": "object"
+        },
+        "modelCard": {
+          "type": "object",
+          "applicable_when_component_type_is": "machine-learning-model",
+          "properties": {
+            "bom-ref": {
+              "type": "string"
+            },
+            "modelParameters": {
+              "type": "object",
+              "properties": {
+                "approach": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "supervised",
+                        "unsupervised",
+                        "reinforcement-learning",
+                        "semi-supervised",
+                        "self-supervised"
+                      ]
+                    }
+                  }
+                },
+                "task": {
+                  "type": "string"
+                },
+                "architectureFamily": {
+                  "type": "string"
+                },
+                "modelArchitecture": {
+                  "type": "string"
+                },
+                "datasets": {
+                  "type": "array",
+                  "items": {
+                    "oneOf": [
+                      {
+                        "$ref": "#/definitions/componentData"
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "ref": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                },
+                "inputs": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/definitions/inputOutputMLParameters"
+                  }
+                },
+                "outputs": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/definitions/inputOutputMLParameters"
+                  }
+                }
+              }
+            },
+            "quantitativeAnalysis": {
+              "type": "object",
+              "properties": {
+                "performanceMetrics": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/definitions/performanceMetric"
+                  }
+                },
+                "graphics": {
+                  "$ref": "#/definitions/graphicsCollection"
+                }
+              }
+            },
+            "considerations": {
+              "type": "object",
+              "properties": {
+                "users": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "useCases": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "technicalLimitations": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "performanceTradeoffs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "ethicalConsiderations": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/definitions/risk"
+                  }
+                },
+                "environmentalConsiderations": {
+                  "$ref": "#/definitions/environmentalConsiderations"
+                },
+                "fairnessAssessments": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/definitions/fairnessAssessment"
+                  }
+                }
+              }
+            },
+            "properties": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/property"
+              }
+            }
+          }
+        },
+        "data": {
+          "type": "array",
+          "applicable_when_component_type_is": "data",
+          "items": {
+            "$ref": "#/definitions/componentData"
+          }
+        }
+      }
+    },
+    "externalReferences": {
+      "type": "array",
+      "items": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "vcs",
+            "issue-tracker",
+            "website",
+            "advisories",
+            "bom",
+            "mailing-list",
+            "social",
+            "chat",
+            "documentation",
+            "support",
+            "source-distribution",
+            "distribution",
+            "distribution-intake",
+            "license",
+            "build-meta",
+            "build-system",
+            "release-notes",
+            "security-contact",
+            "model-card",
+            "log",
+            "configuration",
+            "evidence",
+            "formulation",
+            "attestation",
+            "threat-model",
+            "adversary-model",
+            "risk-assessment",
+            "vulnerability-assertion",
+            "exploitability-statement",
+            "pentest-report",
+            "static-analysis-report",
+            "dynamic-analysis-report",
+            "runtime-analysis-report",
+            "component-analysis-report",
+            "maturity-report",
+            "certification-report",
+            "codified-infrastructure",
+            "quality-metrics",
+            "poam",
+            "electronic-signature",
+            "digital-signature",
+            "rfc-9116",
+            "other"
+          ]
+        },
+        "url": {
+          "type": "string",
+          "format": "iri-reference"
+        },
+        "comment": {
+          "type": "string"
+        }
+      }
+    },
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/dependency"
+      }
+    },
+    "formulation": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/formula"
+      }
+    },
+    "properties": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/property"
+      }
+    }
+  },
+  "cyclonedx_1_6_reusable_definitions_for_ai_ml": {
+    "inputOutputMLParameters": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "type": "string"
+        }
+      }
+    },
+    "componentData": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "bom-ref": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "source-code",
+            "configuration",
+            "dataset",
+            "definition",
+            "other"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "contents": {
+          "type": "object",
+          "properties": {
+            "attachment": {
+              "$ref": "#/definitions/attachment"
+            },
+            "url": {
+              "type": "string",
+              "format": "iri-reference"
+            },
+            "properties": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/property"
+              }
+            }
+          }
+        },
+        "classification": {
+          "type": "string"
+        },
+        "sensitiveData": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "graphics": {
+          "$ref": "#/definitions/graphicsCollection"
+        },
+        "description": {
+          "type": "string"
+        },
+        "governance": {
+          "$ref": "#/definitions/dataGovernance"
+        }
+      }
+    },
+    "performanceMetric": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        },
+        "slice": {
+          "type": "string"
+        },
+        "confidenceInterval": {
+          "type": "object",
+          "properties": {
+            "lowerBound": {
+              "type": "string"
+            },
+            "upperBound": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "risk": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "mitigationStrategy": {
+          "type": "string"
+        }
+      }
+    },
+    "fairnessAssessment": {
+      "type": "object",
+      "properties": {
+        "groupAtRisk": {
+          "type": "string"
+        },
+        "benefits": {
+          "type": "string"
+        },
+        "harms": {
+          "type": "string"
+        },
+        "mitigationStrategy": {
+          "type": "string"
+        }
+      }
+    },
+    "environmentalConsiderations": {
+      "type": "object",
+      "properties": {
+        "energyConsumptions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/energyConsumption"
+          }
+        },
+        "properties": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/property"
+          }
+        }
+      }
+    },
+    "energyConsumption": {
+      "type": "object",
+      "required": [
+        "activity",
+        "energyProviders",
+        "activityEnergyCost"
+      ],
+      "properties": {
+        "activity": {
+          "type": "string",
+          "enum": [
+            "design",
+            "data-collection",
+            "data-preparation",
+            "training",
+            "fine-tuning",
+            "validation",
+            "deployment",
+            "inference",
+            "other"
+          ]
+        },
+        "energyProviders": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/energyProvider"
+          }
+        },
+        "activityEnergyCost": {
+          "$ref": "#/definitions/energyMeasure"
+        },
+        "co2CostEquivalent": {
+          "$ref": "#/definitions/co2Measure"
+        },
+        "co2CostOffset": {
+          "$ref": "#/definitions/co2Measure"
+        },
+        "properties": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/property"
+          }
+        }
+      }
+    }
+  }
+}

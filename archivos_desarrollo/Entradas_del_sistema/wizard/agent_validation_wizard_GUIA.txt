@@ -1,0 +1,245 @@
+================================================================================
+GUÍA DEL WIZARD DE VALIDACIÓN DE AGENTES
+Archivo: agent_validation_wizard.json
+================================================================================
+
+SECCIÓN 0 — CONTEXTO Y PROPÓSITO
+────────────────────────────────────────────────────────────────────────────────
+
+El sistema de validación y aseguramiento de agentes de IA toma como base tres
+documentos OWASP: el Top 10 de Incidentes de Seguridad para IA Agéntica
+(ASI01–ASI10), el catálogo de Amenazas y Mitigaciones v1.1 (T1–T17), y la
+Guía de Aseguramiento de Aplicaciones Agénticas 1.0. El resultado final del
+sistema es un veredicto: APT, APT_WITH_RESTRICTIONS o NOT_APT.
+
+Para producir ese veredicto, el sistema necesita conocer qué hace el agente,
+es decir, qué capacidades tiene activas. Eso es exactamente lo que resuelve
+el wizard: es la capa de entrada que produce el mapa de capability_flags.
+
+El wizard NO es el sistema de validación. Es el formulario estructurado de
+registro que alimenta el pipeline definido en owasp_asi_knowledge_base.json.
+
+
+SECCIÓN 1 — QUÉ ES EL WIZARD Y QUÉ PRODUCE
+────────────────────────────────────────────────────────────────────────────────
+
+El wizard es un cuestionario estructurado que recorre las capacidades del
+agente por categorías. Al completarse, produce un único objeto:
+
+  capability_flags: un mapa de 46 flags boolean. Cada flag es true si la
+  capacidad está activa, false si no. Este mapa es el insumo principal del
+  pipeline de análisis.
+
+El contexto de negocio (dominio, arquitectura, fases del ciclo de vida) y la
+metadata del agente (nombre, versión, responsable) se recogen en una capa de
+registro separada, fuera del wizard.
+
+Ejemplo de salida del wizard:
+  {
+    "capability_flags": {
+      "autonomous_planning": true,
+      "tool_use": true,
+      "api_access": true,
+      "database_queries": false,
+      "multi_agent_architecture": true,
+      ...
+    }
+  }
+
+
+SECCIÓN 2 — ESTRUCTURA DEL WIZARD
+────────────────────────────────────────────────────────────────────────────────
+
+El archivo JSON tiene la siguiente estructura raíz:
+
+  wizard_id          → identificador único del wizard
+  version            → versión del archivo
+  description        → qué hace el wizard
+  knowledge_base_ref → referencia al knowledge base que consume estos datos
+  output_schema      → esquema de la salida esperada (solo capability_flags)
+  coverage_validation → tabla de cobertura (explicada en Sección 4)
+  sections[]         → lista ordenada de secciones con preguntas
+
+Cada SECCIÓN contiene:
+  section_id          → identificador (SEC-01 a SEC-08)
+  title               → nombre descriptivo
+  description         → qué evalúa la sección
+  maps_to_kb_section  → qué parte del knowledge base alimenta
+  questions[]         → lista de preguntas
+
+Cada PREGUNTA contiene:
+  question_id         → identificador único (Q-XXX-NN)
+  text                → enunciado de la pregunta
+  type                → tipo de respuesta (ver Sección 3)
+  required            → si es obligatoria
+  activates_flags     → lista de flags que se activan cuando la respuesta es true
+  maps_to_step        → STEP del capability_taxonomy que activa (puede ser null)
+  depends_on          → condición para mostrar la pregunta (puede ser null)
+  operational_capability_ref → referencia a una OC del knowledge base (opcional)
+  pipeline_note       → nota especial de procesamiento (solo Q-INT-05)
+
+
+SECCIÓN 3 — TIPOS DE PREGUNTA
+────────────────────────────────────────────────────────────────────────────────
+
+  boolean        → pregunta de sí/no. Es el tipo principal del wizard.
+                   Si la respuesta es true, se activan todos los flags en
+                   activates_flags[].
+
+  multi_select   → varias opciones de una lista. Usado en Q-AUTH-03 para
+                   mecanismos de autenticación. Cada opción tiene su propio
+                   activates_flags[], por lo que una sola pregunta puede
+                   activar flags distintos según las opciones elegidas.
+
+
+SECCIÓN 4 — LÓGICA DE CASCADA (depends_on)
+────────────────────────────────────────────────────────────────────────────────
+
+El campo depends_on define cuándo debe mostrarse una pregunta. Si la condición
+no se cumple, la pregunta se omite y sus flags quedan en false.
+
+Estructura:
+  "depends_on": {
+    "operator": "OR",        ← "AND" o "OR" entre las condiciones
+    "conditions": [
+      { "question_id": "Q-AUT-01", "answer_value": true }
+    ]
+  }
+
+Ejemplos de cascadas en el wizard:
+
+  - Q-AUT-02, Q-AUT-03, Q-AUT-04 solo aparecen si Q-AUT-01 = true
+    (solo tiene sentido preguntar sobre goal_setting si hay autonomous_planning)
+
+  - Q-MEM-04 (shared_memory) solo aparece si Q-MEM-02 OR Q-MEM-03 = true
+    (la memoria compartida requiere que haya memoria persistente o RAG)
+
+  - Q-AUTH-03 solo aparece si Q-AUTH-01 OR Q-AUTH-02 = true
+    (los mecanismos de autenticación requieren que haya autenticación)
+
+  - Q-MULTI-02 a Q-MULTI-05 solo aparecen si Q-MULTI-01 = true
+    (las preguntas de rol multi-agente requieren que sea un sistema multi-agente)
+
+Las preguntas sin depends_on se muestran siempre (son raíz).
+
+
+SECCIÓN 5 — MAPA DE SECCIONES Y FLAGS
+────────────────────────────────────────────────────────────────────────────────
+
+Cada sección del wizard cubre un STEP del capability_taxonomy del knowledge
+base. La correspondencia es:
+
+  SEC-01  Autonomía y razonamiento  →  STEP-1
+          → Flags: autonomous_planning, goal_setting, self_evaluation,
+            reflection_loops, adaptive_reasoning
+          → Preguntas: Q-AUT-01 a Q-AUT-04 (con cascada desde Q-AUT-01)
+
+  SEC-02  Memoria y conocimiento  →  STEP-2
+          → Flags: short_term_memory, long_term_memory, cross_session_context,
+            rag_access, vector_database, knowledge_base, shared_memory
+          → Preguntas: Q-MEM-01 a Q-MEM-04
+
+  SEC-03  Herramientas y ejecución  →  STEP-3 (primera parte)
+          → Flags: tool_use, api_access, code_execution, os_commands,
+            filesystem_access, database_queries, web_browsing
+          → Preguntas: Q-TOOL-01 a Q-TOOL-07 (con cascada desde Q-TOOL-01)
+
+  SEC-04  Integraciones avanzadas y dependencias externas  →  STEP-3 (segunda parte) + OC-KC6.6
+          → Flags: mcp_server_integration, a2a_protocol, third_party_plugins,
+            supply_chain_dependencies, critical_systems_access
+          → Preguntas: Q-INT-01 a Q-INT-05 (todas sin cascada, son independientes)
+
+  SEC-05  Identidad y autenticación  →  STEP-4
+          → Flags: user_authentication, agent_identity, persistent_agent_identity,
+            oauth_tokens, api_keys, delegated_credentials, inter_agent_trust
+          → Preguntas: Q-AUTH-01 a Q-AUTH-04 (Q-AUTH-03 con cascada)
+
+  SEC-06  Interacción con usuarios humanos  →  STEP-5
+          → Flags: human_interaction, natural_language_communication,
+            user_facing_interface, human_in_the_loop, approval_workflows,
+            persuasive_output, explainability_features
+          → Preguntas: Q-HUM-01 a Q-HUM-04 (con cascada desde Q-HUM-01)
+
+  SEC-07  Arquitectura multi-agente  →  STEP-6
+          → Flags: multi_agent_architecture, agent_orchestration,
+            central_orchestrator, agent_delegation, swarm_architecture,
+            peer_to_peer_agents, inter_agent_communication, agent_to_agent_trust
+          → Preguntas: Q-MULTI-01 a Q-MULTI-05 (con cascada desde Q-MULTI-01)
+
+Total de preguntas: 33
+Total de flags cubiertos: 46
+
+
+SECCIÓN 6 — CÓMO SE GARANTIZA LA COBERTURA DE TODOS LOS FLAGS
+────────────────────────────────────────────────────────────────────────────────
+
+El wizard incluye un campo coverage_validation en el nivel raíz. Este campo
+contiene un mapa explícito flag → question_id para los 46 flags del sistema.
+
+  "coverage_validation": {
+    "flag_coverage_map": {
+      "autonomous_planning": "Q-AUT-01",
+      "goal_setting":        "Q-AUT-02",
+      ...todos los 46 flags...
+    }
+  }
+
+La validación de cobertura funciona así:
+
+  PASO 1: Obtener todos los capability_flags únicos del knowledge base
+          (de capability_taxonomy.steps[*].capability_flags y de
+           operational_capabilities[*].capability_flag_refs)
+
+  PASO 2: Obtener todos los flags activables por el wizard
+          (recorriendo sections[*].questions[*].activates_flags[] y
+           sections[*].questions[*].options[*].activates_flags[])
+
+  PASO 3: Comparar ambos conjuntos. Si algún flag del knowledge base no
+          aparece en los flags activables del wizard, hay una brecha.
+
+  PASO 4: Comparar ambos conjuntos contra coverage_validation.flag_coverage_map.
+          Los tres deben ser iguales.
+
+Esta validación debe ejecutarse automáticamente cada vez que se modifique el
+wizard o el knowledge base. Protege contra la adición de nuevos flags al
+knowledge base sin su correspondiente pregunta en el wizard.
+
+NOTA SOBRE critical_systems_access:
+Este flag merece atención especial. Existe en operational_capabilities.OC-KC6.6
+pero NO está en ningún STEP de capability_taxonomy. Está cubierto por Q-INT-05
+y su activación hace que el sistema consulte operational_capabilities.OC-KC6.6
+directamente en lugar del pipeline normal de taxonomía. El campo
+pipeline_note en Q-INT-05 documenta este comportamiento especial.
+
+
+SECCIÓN 7 — CÓMO SE USA EL WIZARD EN EL PIPELINE
+────────────────────────────────────────────────────────────────────────────────
+
+El wizard es el paso 1 del pipeline. Su salida alimenta los pasos siguientes:
+
+  WIZARD OUTPUT
+       │
+       └─ capability_flags{}
+              │
+              ├── [flags activos] → capability_taxonomy (buscar STEPs que contengan esos flags)
+              │         │
+              │         └── STEPs activados → threat_catalog (T-IDs asociados)
+              │                    │
+              │                    ├── T-IDs → cross_mapping → ASI-IDs (riesgos categorizados)
+              │                    │
+              │                    ├── Sub-path A (veredicto):
+              │                    │   ASI-IDs → critical_controls_by_risk → verificación binaria
+              │                    │
+              │                    └── Sub-path B (recomendaciones):
+              │                        T-IDs → controls_catalog[mitigates_threats] → lista completa
+              │
+              └── [critical_systems_access=true] → operational_capabilities.OC-KC6.6
+                                                   (procesamiento especial)
+
+El veredicto final (APT / APT_WITH_RESTRICTIONS / NOT_APT) se determina en
+verdict_framework usando la combinación de riesgos activos, controles críticos
+verificados y contexto de negocio.
+
+================================================================================
+FIN DEL DOCUMENTO
+================================================================================

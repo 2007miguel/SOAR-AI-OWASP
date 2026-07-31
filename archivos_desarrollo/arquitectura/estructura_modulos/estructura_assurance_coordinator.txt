@@ -1,0 +1,170 @@
+================================================================================
+ESTRUCTURA DE DESARROLLO — CONTENEDOR 2: assurance-coordinator
+Plano de aseguramiento (M6). Estructura general — stack Python
+Archivo: estructura_assurance_coordinator.txt
+================================================================================
+
+
+SECCIÓN 0 — PROPÓSITO Y ALCANCE
+────────────────────────────────────────────────────────────────────────────────
+
+El assurance-coordinator es el contenedor del PLANO DE ASEGURAMIENTO (el módulo
+M6, el único no determinista). Es el puente entre el engine y las herramientas:
+
+  - Recibe del engine el CHECKLIST de controles críticos + los ASI activos.
+  - Recoge EVIDENCIA por dos vías:
+      a) attestación humana (HITL),
+      b) ejecución de conectores (connector-*, otros contenedores).
+  - NORMALIZA toda la evidencia a un formato común y la devuelve al engine.
+
+Implementa el AssurancePort que el engine define. En SOAR, este contenedor cumple
+el rol de "integration/response engine": decide qué integraciones correr, las
+ejecuta y consolida resultados.
+
+NOTA: aquí está la estructura GENERAL. El detalle fino se especificará después.
+No contiene las herramientas en sí (esas son connector-*, ver
+estructura_connectors.txt); contiene el CLIENTE que las orquesta.
+
+Stack: Python (consistente con el engine). FastAPI (expone el puerto por red),
+pydantic (contratos de evidencia), cliente del runtime de contenedores para
+levantar conectores efímeros.
+
+
+SECCIÓN 1 — PRINCIPIOS
+────────────────────────────────────────────────────────────────────────────────
+
+A1. NO EJECUTA HERRAMIENTAS DIRECTAMENTE
+    Levanta contenedores connector-* efímeros y habla con ellos por una interfaz
+    uniforme. Añadir una herramienta = registrar un conector, no tocar el core.
+
+A2. DOS FUENTES DE EVIDENCIA, UN SOLO FORMATO DE SALIDA
+    Attestación humana y resultados de herramientas se normalizan al mismo
+    EvidenceBundle que consume el VerdictEngine (M7) del engine.
+
+A3. ES REANUDABLE (asíncrono por diseño)
+    La evidencia puede tardar (herramientas lentas + humano). El coordinator
+    persiste el estado de los jobs y attestaciones parciales; el caso avanza
+    cuando la evidencia está completa.
+
+A4. SELECCIÓN GUIADA POR EL KB
+    Qué conectores correr se decide por los ASSUR-ID relevantes a los ASI activos
+    (assurance_methods.covers_risks) y por la categoria_validacion de cada control.
+
+A5. AISLAMIENTO DE LO QUE ORQUESTA
+    Los conectores corren en red segmentada, efímeros y sandboxeados. El
+    coordinator nunca da a un conector acceso al KB ni a la base de datos.
+
+
+SECCIÓN 2 — ÁRBOL DE ARCHIVOS (general)
+────────────────────────────────────────────────────────────────────────────────
+
+  assurance-coordinator/
+  ├── pyproject.toml
+  ├── README.md
+  ├── Dockerfile
+  ├── .env.example                   # ENGINE_URL, RUNTIME (docker/k8s), LIMITS, …
+  │
+  ├── src/
+  │   └── assurance_coordinator/
+  │       ├── __init__.py
+  │       ├── main.py                # FastAPI: expone AssurancePort por red
+  │       ├── config.py
+  │       ├── logging.py
+  │       │
+  │       ├── contracts/             # modelos compartidos con el engine
+  │       │   ├── __init__.py
+  │       │   ├── checklist.py       # ChecklistItem (lo que llega del engine)
+  │       │   ├── evidence.py        # ToolResult, Attestation, EvidenceBundle
+  │       │   └── jobs.py            # ConnectorJob, JobStatus
+  │       │
+  │       ├── port/
+  │       │   └── assurance_api.py   # implementa AssurancePort: recibe checklist,
+  │       │                          #   devuelve EvidenceBundle
+  │       │
+  │       ├── checklist/
+  │       │   └── presenter.py       # entrega el checklist al evaluador (para HITL)
+  │       │
+  │       ├── attestation/           # HITL
+  │       │   ├── intake.py          # recibe attestaciones humanas (status+evidence)
+  │       │   └── partial_store.py   # persiste attestaciones parciales (reanudable)
+  │       │
+  │       ├── connectors/            # CLIENTE/orquestación de conectores (no las tools)
+  │       │   ├── registry.py        # catálogo: conectores disponibles + qué cubren
+  │       │   ├── selector.py        # ASI/ASSUR/categoría → conectores a ejecutar
+  │       │   ├── dispatcher.py      # levanta el conector efímero (API del runtime)
+  │       │   └── client.py          # interfaz uniforme run(target, config) → evidencia
+  │       │
+  │       ├── normalizer/
+  │       │   └── evidence_mapper.py # salidas heterogéneas → EvidenceBundle común
+  │       │
+  │       └── persistence/
+  │           ├── __init__.py
+  │           └── job_store.py       # jobs, resultados y attestaciones (reanudable)
+  │
+  └── tests/
+      ├── test_selector.py           # ASI activos → conjunto correcto de conectores
+      ├── test_normalizer.py         # salida de tool de ejemplo → EvidenceBundle
+      └── test_attestation_intake.py
+
+
+SECCIÓN 3 — RESPONSABILIDAD POR CARPETA
+────────────────────────────────────────────────────────────────────────────────
+
+  contracts/    Modelos de checklist y evidencia. Deben coincidir con los del
+                engine (contrato compartido); idealmente un paquete común versionado.
+
+  port/         Implementa el AssurancePort. Es la cara que ve el engine: recibe el
+                checklist y, cuando hay evidencia, devuelve el EvidenceBundle.
+
+  checklist/    Presenta al evaluador los ítems a atestiguar (con su categoria_
+                validacion y ASSUR sugerido).
+
+  attestation/  Recoge y persiste la evidencia HUMANA (HITL), tolerando entradas
+                parciales y reanudación.
+
+  connectors/   La orquestación de herramientas (lado cliente):
+                - registry: qué conectores existen y qué cubren.
+                - selector: decide cuáles correr según ASI/ASSUR/categoría.
+                - dispatcher: levanta el contenedor conector efímero.
+                - client: habla con él por la interfaz uniforme run().
+
+  normalizer/   Convierte salidas heterogéneas de herramientas en un EvidenceBundle
+                uniforme que el VerdictEngine puede consumir sin conocer la tool.
+
+  persistence/  Estado de jobs y attestaciones (para asincronía y reanudación).
+
+
+SECCIÓN 4 — INTERACCIÓN CON LOS OTROS CONTENEDORES
+────────────────────────────────────────────────────────────────────────────────
+
+  engine  ──(checklist + ASI activos)──►  assurance-coordinator
+                                              │
+                        ┌─────────────────────┼─────────────────────┐
+                        ▼                     ▼                     ▼
+                  attestation (HITL)    selector → dispatcher    normalizer
+                        │                     │ (levanta conectores efímeros)
+                        │                     ▼
+                        │             connector-*  ──(evidencia)──► normalizer
+                        └─────────────► EvidenceBundle ◄────────────┘
+                                              │
+  engine  ◄──(EvidenceBundle consolidado)────┘   → engine ejecuta M7 (veredicto)
+
+  El coordinator NO calcula veredicto; solo consolida evidencia. La decisión sigue
+  siendo del engine (VerdictEngine), manteniendo la capa de decisión en un solo
+  lugar.
+
+
+SECCIÓN 5 — ROL EN EL PATRÓN SOAR
+────────────────────────────────────────────────────────────────────────────────
+
+  - engine.orchestrator      = motor de orquestación / playbook.
+  - assurance-coordinator     = motor de integración y respuesta (ejecuta las
+                                "integraciones" = conectores, recoge evidencia).
+  - connector-*               = las integraciones (herramientas).
+  - assessment-db (engine)    = case management (los casos y su historial).
+
+  Este contenedor es, en términos SOAR, el "integration runner + HITL gate".
+
+================================================================================
+FIN DEL DOCUMENTO
+================================================================================

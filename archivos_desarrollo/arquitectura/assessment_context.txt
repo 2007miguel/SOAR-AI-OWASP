@@ -1,0 +1,251 @@
+================================================================================
+CONTRATO DEL ASSESSMENT CONTEXT
+El objeto de caso que fluye entre los módulos del sistema
+Archivo: assessment_context.txt
+================================================================================
+
+
+SECCIÓN 0 — QUÉ ES Y POR QUÉ EXISTE
+────────────────────────────────────────────────────────────────────────────────
+
+El Assessment Context es el objeto que representa UNA evaluación de UN agente.
+Es el backbone de la arquitectura modular: el orquestador lo crea al iniciar, y
+cada módulo lo recibe, lee ciertos campos, escribe otros y lo devuelve
+enriquecido.
+
+Por qué es el elemento central:
+  - Es el ÚNICO estado que se comparte entre módulos. Ningún módulo lee estado
+    fuera de este objeto (salvo el Knowledge Base, que es solo lectura).
+  - Define el CONTRATO: cada módulo declara qué campos lee y qué campos escribe.
+    Ese contrato es lo que permite mover, reemplazar o testear un módulo sin
+    tocar a los demás.
+  - Es la unidad de persistencia y auditoría: se versiona en cada transición.
+
+Regla de oro: si un módulo produce algo, lo escribe aquí; si necesita algo, lo
+lee de aquí (o del KB). No hay canales laterales.
+
+
+SECCIÓN 1 — CICLO DE VIDA Y ESTADOS
+────────────────────────────────────────────────────────────────────────────────
+
+El campo `status` marca en qué punto del flujo está el caso:
+
+  intake              → recién creado, inputs cargados, sin validar
+  analyzing           → M1–M5 en ejecución (plano determinista)
+  awaiting_assurance  → M5 terminó; se emitió el checklist y se espera evidencia
+                        (attestaciones humanas + resultados de herramientas)
+  scoring             → M6 completó; M7 calculando veredicto
+  completed           → reporte final generado
+  error               → validación bloqueante en M1; flujo abortado
+
+Transiciones válidas:
+  intake → analyzing → awaiting_assurance → scoring → completed
+  intake → error   (si M1 falla)
+  awaiting_assurance → awaiting_assurance   (evidencia parcial; se reanuda luego)
+  completed → analyzing   (solo vía playbook REASSESS, ver arquitectura_sistema)
+
+
+SECCIÓN 2 — ESTRUCTURA COMPLETA (POR CAPAS)
+────────────────────────────────────────────────────────────────────────────────
+
+El objeto se organiza en 6 capas que se llenan en orden. Notación:
+  tipo entre <>, [] = lista, {} = objeto/mapa, ? = opcional.
+
+  AssessmentContext {
+
+    ── CAPA META (creada por el orquestador) ───────────────────────────────
+    assessment_id      <string>     // id único de la evaluación (UUID)
+    kb_version         <string>     // versión del KB usada (reproducibilidad)
+    schema_version     <string>     // versión de este contrato
+    playbook_id        <string>     // p.ej. "FULL_VALIDATION"
+    status             <enum>       // ver Sección 1
+    created_at         <datetime>
+    updated_at         <datetime>
+    transitions[]      <object>     // historial: {module, timestamp, status}
+
+    ── CAPA INPUTS (escrita por Intake, Capa 1) ────────────────────────────
+    inputs {
+      capability_flags {}           // mapa flag<string> → <boolean>, los 46 flags
+      business_context {
+        business_domain   <string>  // valor del enum de dominios
+        architecture_id   <string>  // ARCH-SINGLE | ARCH-CENTRAL | ARCH-SWARM
+        lifecycle_phases  <string>[]// subconjunto de {design, build, runtime}
+      }
+      aibom ? {}                    // documento CycloneDX (informativo en v1)
+    }
+
+    ── CAPA ANÁLISIS (escrita por M1–M4) ───────────────────────────────────
+    analysis {
+      // M1 Intake&Validation
+      validation {
+        ok                <boolean>
+        errors[]          <object>  // {code, message} bloqueantes
+      }
+      // M2 ThreatMapper
+      active_steps[]      <string>  // STEPs activados, p.ej. ["STEP-1","STEP-3"]
+      active_threats[]    <string>  // T-IDs activos, p.ej. ["T2","T6","T9"]
+      threat_source_map {}          // T-ID → [flags/steps que lo activaron]
+      critical_systems_path <boolean> // true si se procesó vía OC-KC6.6
+      // M3 RiskMapper
+      active_asi[]        <string>  // ASI-IDs activos, p.ej. ["ASI01","ASI06"]
+      asi_trace {}                  // ASI-ID → [T-IDs que lo activaron]
+      // M4 ContextEscalator
+      high_risk_domain   <boolean>
+      hotl_required      <boolean>  // Human-Over-The-Loop
+      architecture_recos {          // SOLO recomendaciones (no veredicto)
+        security_practices[]   <object>
+        priority_control_domains[] <string>
+      }
+      escalations[]      <object>   // {rule, effect} aplicadas
+      warnings[]         <object>   // {code, message} no bloqueantes
+    }
+
+    ── CAPA CONTROLES (escrita por M5) ─────────────────────────────────────
+    controls {
+      critical_required[] <object>  // Sub-path A → base del checklist
+                                    //   {control_id, name, description,
+                                    //    required_by_asi[], category}
+      recommended[]      <object>   // Sub-path B, filtrado por lifecycle
+                                    //   {control_id, name, mitigates[],
+                                    //    lifecycle_phases[]}
+    }
+
+    ── CAPA ASEGURAMIENTO (escrita por M6) ─────────────────────────────────
+    assurance {
+      checklist[]        <object>   // un item por control crítico:
+                                    //   {control_id, why[], category,
+                                    //    suggested_assur[], status, evidence}
+      attestations {}               // control_id → {status, evidence,
+                                    //   assurance_method?}
+                                    //   status ∈ implemented|partial|not_implemented
+      tool_results[]     <object>   // evidencia de conectores:
+                                    //   {connector, control_id?, asi?, verdict,
+                                    //    findings[], raw_ref}
+      red_teaming_done   <boolean>
+      incident_response_plan <boolean>
+      assurance_methods_used[] <string> // ASSUR-IDs ejecutados
+    }
+
+    ── CAPA VEREDICTO (escrita por M7) ─────────────────────────────────────
+    verdict {
+      result   <enum>               // APT | APT_WITH_RESTRICTIONS | NOT_APT
+      label    <string>
+      rationale <string>            // explicación legible del porqué
+      blocking_reasons[] <string>   // si NOT_APT: causas concretas
+      trace {                       // trazabilidad completa para auditoría
+        flags_to_threats {}
+        threats_to_risks {}
+        risks_to_controls {}
+      }
+    }
+  }
+
+
+SECCIÓN 3 — MATRIZ LEE / ESCRIBE POR MÓDULO
+────────────────────────────────────────────────────────────────────────────────
+
+Esta es la tabla que define el contrato. Cada módulo SOLO puede tocar los campos
+indicados. Cualquier acceso fuera de esto rompe la modularidad.
+
+  MÓDULO              LEE                              ESCRIBE
+  ──────────────────  ───────────────────────────────  ──────────────────────────
+  Orquestador         (todo, para coordinar)           meta.*, status, transitions
+  M1 Intake&Valid.    inputs.*                         analysis.validation,
+                                                         analysis.warnings, status
+                      (cobertura de flags wizard vs KB: selfcheck de arranque,
+                       no la lee M1 — ver arquitectura_sistema.txt §8)
+  M2 ThreatMapper     inputs.capability_flags          analysis.active_steps,
+                      KB: capability_taxonomy,           analysis.active_threats,
+                          operational_capabilities        threat_source_map,
+                                                          critical_systems_path
+  M3 RiskMapper       analysis.active_threats          analysis.active_asi,
+                      KB: threat_catalog.maps_to_asi     analysis.asi_trace
+  M4 ContextEscalator inputs.business_context,         analysis.high_risk_domain,
+                      analysis.active_asi                hotl_required,
+                      KB: high_risk_business_domains,     architecture_recos,
+                          architecture_types              escalations
+  M5 ControlResolver  analysis.active_asi,             controls.critical_required,
+                      analysis.active_threats,           controls.recommended
+                      inputs.business_context.
+                        lifecycle_phases,
+                      analysis.high_risk_domain
+                      KB: critical_controls_by_risk,
+                          controls_catalog
+  M6 Assurance        controls.critical_required       assurance.*
+                      KB: controls metadata,
+                          assurance_methods
+                      (+ HITL humano + conectores)
+  M7 VerdictEngine    controls.critical_required,      verdict.*
+                      assurance.*,
+                      analysis.high_risk_domain
+                      KB: verdict_framework,
+                          high_severity_risks
+  R Reporter          (todo el contexto)               (produce reporte externo)
+
+
+SECCIÓN 4 — INVARIANTES Y REGLAS DE INTEGRIDAD
+────────────────────────────────────────────────────────────────────────────────
+
+I1. INMUTABILIDAD HACIA ATRÁS
+    Un módulo nunca reescribe campos de una capa anterior. M3 no toca inputs; M7
+    no toca analysis. Solo añade su propia capa.
+
+I2. FUENTE ÚNICA DE ASI
+    analysis.active_asi se deriva EXCLUSIVAMENTE de active_threats vía
+    threat_catalog.maps_to_asi (Appendix A). No se toma de activated_risks (que
+    es caché) ni de la arquitectura ni de los perfiles.
+
+I3. LA ARQUITECTURA NO ALTERA EL VEREDICTO
+    architecture_recos es informativo/recomendación. Nunca modifica active_asi
+    ni active_threats.
+
+I4. EL VEREDICTO SOLO EXISTE DESPUÉS DE ASEGURAMIENTO
+    verdict.* solo puede escribirse si assurance.* está poblado. M7 no corre
+    antes de M6.
+
+I5. REPRODUCIBILIDAD
+    Con el mismo (inputs + kb_version), las capas analysis y controls deben ser
+    idénticas siempre (plano determinista). Solo assurance y verdict dependen de
+    evidencia externa.
+
+I6. TRAZABILIDAD OBLIGATORIA
+    Todo ASI activo debe poder rastrearse a un T-ID y a un flag (asi_trace +
+    threat_source_map). Todo control crítico debe rastrearse a un ASI
+    (required_by_asi). Esto sostiene el argumento de fidelidad OWASP.
+
+
+SECCIÓN 5 — EJEMPLO ABREVIADO (instancia parcial)
+────────────────────────────────────────────────────────────────────────────────
+
+  {
+    "assessment_id": "a1b2-...",
+    "kb_version": "1.0",
+    "playbook_id": "FULL_VALIDATION",
+    "status": "awaiting_assurance",
+    "inputs": {
+      "capability_flags": { "tool_use": true, "code_execution": true,
+                            "human_interaction": true, "...": false },
+      "business_context": { "business_domain": "Healthcare",
+                            "architecture_id": "ARCH-SINGLE",
+                            "lifecycle_phases": ["build","runtime"] }
+    },
+    "analysis": {
+      "active_steps": ["STEP-3","STEP-5"],
+      "active_threats": ["T2","T3","T4","T11","T16","T17","T10","T15"],
+      "active_asi": ["ASI02","ASI03","ASI04","ASI05","ASI06","ASI07","ASI09","ASI10"],
+      "high_risk_domain": true,
+      "hotl_required": true
+    },
+    "controls": {
+      "critical_required": [
+        { "control_id":"CTRL-TOOL-01","required_by_asi":["ASI02"],"category":"herramienta_tecnica" },
+        { "control_id":"CTRL-DEP-05","required_by_asi":["high_risk_domain"],"category":"herramienta_tecnica" }
+      ]
+    },
+    "assurance": { "checklist": [ /* items pendientes de evidencia */ ] },
+    "verdict": null
+  }
+
+================================================================================
+FIN DEL DOCUMENTO
+================================================================================

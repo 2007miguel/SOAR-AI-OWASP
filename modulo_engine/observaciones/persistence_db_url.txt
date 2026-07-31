@@ -1,0 +1,14 @@
+PERSISTENCE — DB_URL con Docker Compose
+================================================================================
+
+Cuando el engine corre en Docker Compose, el host en DB_URL NO es "localhost".
+Es el nombre del servicio Postgres definido en docker-compose.yml.
+
+Ejemplo: si el servicio se llama "db":
+  DB_URL=postgresql+psycopg2://postgres:password@db:5432/soar_db
+
+"localhost" solo aplica cuando se corre el engine directamente en la máquina
+host (sin Docker), apuntando a un Postgres también en el host.
+
+Esto se configura en el paso 7 junto con .env.example, Dockerfile y docker-compose.yml.
+================================================================================

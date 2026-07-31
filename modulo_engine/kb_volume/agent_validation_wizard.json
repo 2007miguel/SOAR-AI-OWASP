@@ -1,0 +1,513 @@
+{
+  "wizard_id": "AGENT_VALIDATION_WIZARD_V1",
+  "version": "1.0",
+  "description": "Wizard de registro estructurado para el sistema de validación y aseguramiento de agentes de IA. Produce exclusivamente el mapa de capability_flags activos que alimenta el pipeline de análisis del knowledge base. El contexto de negocio y metadata del agente se recogen en una capa de registro separada.",
+  "knowledge_base_ref": "owasp_asi_knowledge_base.json",
+  "output_schema": {
+    "capability_flags": {
+      "description": "Mapa de todos los flags posibles con valor boolean. true = activo, false = inactivo.",
+      "flags": [
+        "autonomous_planning", "goal_setting", "self_evaluation", "reflection_loops", "adaptive_reasoning",
+        "short_term_memory", "long_term_memory", "rag_access", "shared_memory", "vector_database",
+        "cross_session_context", "knowledge_base",
+        "tool_use", "api_access", "code_execution", "os_commands", "filesystem_access",
+        "database_queries", "web_browsing", "mcp_server_integration", "a2a_protocol",
+        "third_party_plugins", "supply_chain_dependencies", "critical_systems_access",
+        "user_authentication", "agent_identity", "delegated_credentials", "oauth_tokens",
+        "api_keys", "inter_agent_trust", "persistent_agent_identity",
+        "human_interaction", "human_in_the_loop", "user_facing_interface", "approval_workflows",
+        "natural_language_communication", "persuasive_output", "explainability_features",
+        "multi_agent_architecture", "agent_orchestration", "agent_delegation",
+        "swarm_architecture", "central_orchestrator", "peer_to_peer_agents",
+        "inter_agent_communication", "agent_to_agent_trust"
+      ]
+    }
+  },
+  "coverage_validation": {
+    "description": "Tabla de cobertura. Mapea cada capability_flag al question_id que lo activa. Debe ejecutarse como validación automática cada vez que el wizard o el knowledge base se modifiquen. Si un flag no aparece aquí cubierto por al menos una pregunta, el pipeline quedará con un riesgo invisible.",
+    "flag_coverage_map": {
+      "autonomous_planning":          "Q-AUT-01",
+      "goal_setting":                 "Q-AUT-02",
+      "self_evaluation":              "Q-AUT-03",
+      "reflection_loops":             "Q-AUT-03",
+      "adaptive_reasoning":           "Q-AUT-04",
+      "short_term_memory":            "Q-MEM-01",
+      "long_term_memory":             "Q-MEM-02",
+      "cross_session_context":        "Q-MEM-02",
+      "rag_access":                   "Q-MEM-03",
+      "vector_database":              "Q-MEM-03",
+      "knowledge_base":               "Q-MEM-03",
+      "shared_memory":                "Q-MEM-04",
+      "tool_use":                     "Q-TOOL-01",
+      "api_access":                   "Q-TOOL-02",
+      "code_execution":               "Q-TOOL-03",
+      "os_commands":                  "Q-TOOL-04",
+      "filesystem_access":            "Q-TOOL-05",
+      "database_queries":             "Q-TOOL-06",
+      "web_browsing":                 "Q-TOOL-07",
+      "mcp_server_integration":       "Q-INT-01",
+      "a2a_protocol":                 "Q-INT-02",
+      "third_party_plugins":          "Q-INT-03",
+      "supply_chain_dependencies":    "Q-INT-04",
+      "critical_systems_access":      "Q-INT-05",
+      "user_authentication":          "Q-AUTH-01",
+      "agent_identity":               "Q-AUTH-02",
+      "persistent_agent_identity":    "Q-AUTH-02",
+      "oauth_tokens":                 "Q-AUTH-03",
+      "api_keys":                     "Q-AUTH-03",
+      "delegated_credentials":        "Q-AUTH-03",
+      "inter_agent_trust":            "Q-AUTH-04",
+      "human_interaction":            "Q-HUM-01",
+      "natural_language_communication": "Q-HUM-01",
+      "user_facing_interface":        "Q-HUM-01",
+      "human_in_the_loop":            "Q-HUM-02",
+      "approval_workflows":           "Q-HUM-02",
+      "persuasive_output":            "Q-HUM-03",
+      "explainability_features":      "Q-HUM-04",
+      "multi_agent_architecture":     "Q-MULTI-01",
+      "agent_orchestration":          "Q-MULTI-02",
+      "central_orchestrator":         "Q-MULTI-02",
+      "agent_delegation":             "Q-MULTI-03",
+      "swarm_architecture":           "Q-MULTI-04",
+      "peer_to_peer_agents":          "Q-MULTI-04",
+      "inter_agent_communication":    "Q-MULTI-05",
+      "agent_to_agent_trust":         "Q-MULTI-05"
+    },
+    "known_gaps": [
+      {
+        "flag": "critical_systems_access",
+        "note": "Este flag existe en operational_capabilities.OC-KC6.6.capability_flag_refs pero NO aparece en ningún STEP de capability_taxonomy. Está cubierto por Q-INT-05 en el wizard y activa controles de OC-KC6.6, pero no activará ningún STEP del pipeline de taxonomía. El sistema debe manejar este flag directamente contra operational_capabilities, no a través de capability_taxonomy."
+      }
+    ]
+  },
+  "sections": [
+    {
+      "section_id": "SEC-01",
+      "title": "Autonomía y razonamiento",
+      "description": "Evalúa si el agente planifica, razona y se auto-evalúa de forma independiente. Corresponde a STEP-1 del Taxonomy Navigator.",
+      "maps_to_kb_section": ["capability_taxonomy.STEP-1"],
+      "questions": [
+        {
+          "question_id": "Q-AUT-01",
+          "text": "¿El agente determina de forma independiente los pasos necesarios para alcanzar un objetivo, sin recibir instrucciones explícitas paso a paso?",
+          "type": "boolean",
+          "required": true,
+          "maps_to_step": "STEP-1",
+          "activates_flags": ["autonomous_planning"],
+          "depends_on": null
+        },
+        {
+          "question_id": "Q-AUT-02",
+          "text": "¿El agente puede definir o modificar sus propios objetivos de alto nivel durante la ejecución?",
+          "type": "boolean",
+          "required": false,
+          "maps_to_step": "STEP-1",
+          "activates_flags": ["goal_setting"],
+          "depends_on": {
+            "operator": "OR",
+            "conditions": [{ "question_id": "Q-AUT-01", "answer_value": true }]
+          }
+        },
+        {
+          "question_id": "Q-AUT-03",
+          "text": "¿El agente evalúa sus propios outputs y realiza iteraciones o correcciones antes de entregar un resultado final?",
+          "type": "boolean",
+          "required": false,
+          "maps_to_step": "STEP-1",
+          "activates_flags": ["self_evaluation", "reflection_loops"],
+          "depends_on": {
+            "operator": "OR",
+            "conditions": [{ "question_id": "Q-AUT-01", "answer_value": true }]
+          }
+        },
+        {
+          "question_id": "Q-AUT-04",
+          "text": "¿El agente ajusta dinámicamente su estrategia de razonamiento basándose en resultados intermedios o nueva información recibida durante la tarea?",
+          "type": "boolean",
+          "required": false,
+          "maps_to_step": "STEP-1",
+          "activates_flags": ["adaptive_reasoning"],
+          "depends_on": {
+            "operator": "OR",
+            "conditions": [{ "question_id": "Q-AUT-01", "answer_value": true }]
+          }
+        }
+      ]
+    },
+    {
+      "section_id": "SEC-02",
+      "title": "Memoria y conocimiento",
+      "description": "Evalúa el uso de memoria de corto y largo plazo, bases de conocimiento y contexto compartido. Corresponde a STEP-2 del Taxonomy Navigator.",
+      "maps_to_kb_section": ["capability_taxonomy.STEP-2"],
+      "questions": [
+        {
+          "question_id": "Q-MEM-01",
+          "text": "¿El agente retiene información del contexto de la sesión actual para tomar decisiones durante esa misma sesión?",
+          "type": "boolean",
+          "required": true,
+          "maps_to_step": "STEP-2",
+          "activates_flags": ["short_term_memory"],
+          "depends_on": null
+        },
+        {
+          "question_id": "Q-MEM-02",
+          "text": "¿El agente retiene información entre sesiones distintas, es decir, recuerda interacciones o datos de sesiones anteriores?",
+          "type": "boolean",
+          "required": true,
+          "maps_to_step": "STEP-2",
+          "activates_flags": ["long_term_memory", "cross_session_context"],
+          "depends_on": null
+        },
+        {
+          "question_id": "Q-MEM-03",
+          "text": "¿El agente consulta una base de conocimiento externa, base de datos vectorial o sistema RAG para enriquecer sus respuestas?",
+          "type": "boolean",
+          "required": true,
+          "maps_to_step": "STEP-2",
+          "activates_flags": ["rag_access", "vector_database", "knowledge_base"],
+          "depends_on": null
+        },
+        {
+          "question_id": "Q-MEM-04",
+          "text": "¿La memoria o el contexto del agente es compartida entre múltiples agentes o múltiples usuarios?",
+          "type": "boolean",
+          "required": false,
+          "maps_to_step": "STEP-2",
+          "activates_flags": ["shared_memory"],
+          "depends_on": {
+            "operator": "OR",
+            "conditions": [
+              { "question_id": "Q-MEM-02", "answer_value": true },
+              { "question_id": "Q-MEM-03", "answer_value": true }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "section_id": "SEC-03",
+      "title": "Herramientas y ejecución",
+      "description": "Evalúa el uso de herramientas externas, ejecución de código, acceso a sistemas de archivos y bases de datos. Corresponde a parte de STEP-3 del Taxonomy Navigator.",
+      "maps_to_kb_section": ["capability_taxonomy.STEP-3", "operational_capabilities"],
+      "questions": [
+        {
+          "question_id": "Q-TOOL-01",
+          "text": "¿El agente utiliza herramientas externas, funciones o integraciones para realizar acciones más allá del texto (enviar emails, modificar archivos, llamar APIs, etc.)?",
+          "type": "boolean",
+          "required": true,
+          "maps_to_step": "STEP-3",
+          "activates_flags": ["tool_use"],
+          "depends_on": null
+        },
+        {
+          "question_id": "Q-TOOL-02",
+          "text": "¿El agente realiza llamadas a APIs externas (REST, GraphQL, servicios de terceros)?",
+          "type": "boolean",
+          "required": false,
+          "maps_to_step": "STEP-3",
+          "activates_flags": ["api_access"],
+          "operational_capability_ref": "OC-KC6.1",
+          "depends_on": {
+            "operator": "OR",
+            "conditions": [{ "question_id": "Q-TOOL-01", "answer_value": true }]
+          }
+        },
+        {
+          "question_id": "Q-TOOL-03",
+          "text": "¿El agente genera y ejecuta código o scripts de forma dinámica?",
+          "type": "boolean",
+          "required": false,
+          "maps_to_step": "STEP-3",
+          "activates_flags": ["code_execution"],
+          "operational_capability_ref": "OC-KC6.2",
+          "depends_on": {
+            "operator": "OR",
+            "conditions": [{ "question_id": "Q-TOOL-01", "answer_value": true }]
+          }
+        },
+        {
+          "question_id": "Q-TOOL-04",
+          "text": "¿El agente ejecuta comandos del sistema operativo o interactúa con el OS directamente?",
+          "type": "boolean",
+          "required": false,
+          "maps_to_step": "STEP-3",
+          "activates_flags": ["os_commands"],
+          "operational_capability_ref": "OC-KC6.5",
+          "depends_on": {
+            "operator": "OR",
+            "conditions": [
+              { "question_id": "Q-TOOL-01", "answer_value": true },
+              { "question_id": "Q-TOOL-03", "answer_value": true }
+            ]
+          }
+        },
+        {
+          "question_id": "Q-TOOL-05",
+          "text": "¿El agente lee o escribe archivos en el sistema de archivos?",
+          "type": "boolean",
+          "required": false,
+          "maps_to_step": "STEP-3",
+          "activates_flags": ["filesystem_access"],
+          "operational_capability_ref": "OC-KC6.5",
+          "depends_on": {
+            "operator": "OR",
+            "conditions": [{ "question_id": "Q-TOOL-01", "answer_value": true }]
+          }
+        },
+        {
+          "question_id": "Q-TOOL-06",
+          "text": "¿El agente consulta o modifica bases de datos (relacionales, NoSQL, vectoriales)?",
+          "type": "boolean",
+          "required": false,
+          "maps_to_step": "STEP-3",
+          "activates_flags": ["database_queries"],
+          "operational_capability_ref": "OC-KC6.3",
+          "depends_on": {
+            "operator": "OR",
+            "conditions": [{ "question_id": "Q-TOOL-01", "answer_value": true }]
+          }
+        },
+        {
+          "question_id": "Q-TOOL-07",
+          "text": "¿El agente navega o interactúa con páginas web de forma autónoma?",
+          "type": "boolean",
+          "required": false,
+          "maps_to_step": "STEP-3",
+          "activates_flags": ["web_browsing"],
+          "operational_capability_ref": "OC-KC6.4",
+          "depends_on": {
+            "operator": "OR",
+            "conditions": [{ "question_id": "Q-TOOL-01", "answer_value": true }]
+          }
+        }
+      ]
+    },
+    {
+      "section_id": "SEC-04",
+      "title": "Integraciones avanzadas y dependencias externas",
+      "description": "Evalúa el uso de protocolos de integración avanzados, plugins de terceros y acceso a infraestructura crítica. Corresponde a la parte restante de STEP-3 y al flag adicional de operational_capabilities.",
+      "maps_to_kb_section": ["capability_taxonomy.STEP-3", "operational_capabilities.OC-KC6.6"],
+      "questions": [
+        {
+          "question_id": "Q-INT-01",
+          "text": "¿El agente utiliza servidores MCP (Model Context Protocol) para acceder a herramientas o recursos?",
+          "type": "boolean",
+          "required": false,
+          "maps_to_step": "STEP-3",
+          "activates_flags": ["mcp_server_integration"],
+          "depends_on": null
+        },
+        {
+          "question_id": "Q-INT-02",
+          "text": "¿El agente se comunica con otros agentes utilizando protocolos A2A (Agent-to-Agent) u otros protocolos de colaboración inter-agente?",
+          "type": "boolean",
+          "required": false,
+          "maps_to_step": "STEP-3",
+          "activates_flags": ["a2a_protocol"],
+          "depends_on": null
+        },
+        {
+          "question_id": "Q-INT-03",
+          "text": "¿El agente utiliza plugins, extensiones o herramientas de mercados o repositorios de terceros?",
+          "type": "boolean",
+          "required": false,
+          "maps_to_step": "STEP-3",
+          "activates_flags": ["third_party_plugins"],
+          "depends_on": null
+        },
+        {
+          "question_id": "Q-INT-04",
+          "text": "¿El agente depende de librerías externas, frameworks de terceros o proveedores de modelos externos?",
+          "type": "boolean",
+          "required": false,
+          "maps_to_step": "STEP-3",
+          "activates_flags": ["supply_chain_dependencies"],
+          "depends_on": null
+        },
+        {
+          "question_id": "Q-INT-05",
+          "text": "¿El agente interactúa o tiene acceso a sistemas de infraestructura crítica (sistemas industriales SCADA, IoT, sistemas de control, redes eléctricas u otros sistemas de alta consecuencia)?",
+          "type": "boolean",
+          "required": false,
+          "maps_to_step": null,
+          "activates_flags": ["critical_systems_access"],
+          "operational_capability_ref": "OC-KC6.6",
+          "pipeline_note": "Este flag no activa ningún STEP de capability_taxonomy. El sistema debe procesarlo directamente contra operational_capabilities.OC-KC6.6 y aplicar el special_note de supervisión máxima.",
+          "depends_on": null
+        }
+      ]
+    },
+    {
+      "section_id": "SEC-05",
+      "title": "Identidad y autenticación",
+      "description": "Evalúa los mecanismos de autenticación usados por el agente y su propia identidad dentro del sistema. Corresponde a STEP-4 del Taxonomy Navigator.",
+      "maps_to_kb_section": ["capability_taxonomy.STEP-4"],
+      "questions": [
+        {
+          "question_id": "Q-AUTH-01",
+          "text": "¿El agente verifica la identidad de los usuarios, herramientas o servicios con los que interactúa antes de ejecutar acciones?",
+          "type": "boolean",
+          "required": true,
+          "maps_to_step": "STEP-4",
+          "activates_flags": ["user_authentication"],
+          "depends_on": null
+        },
+        {
+          "question_id": "Q-AUTH-02",
+          "text": "¿El agente tiene una identidad propia asignada (ID de agente, service account, workload identity) que persiste entre sesiones o despliegues?",
+          "type": "boolean",
+          "required": true,
+          "maps_to_step": "STEP-4",
+          "activates_flags": ["agent_identity", "persistent_agent_identity"],
+          "depends_on": null
+        },
+        {
+          "question_id": "Q-AUTH-03",
+          "text": "¿Qué mecanismos de autenticación utiliza el agente para acceder a herramientas, APIs o servicios externos? (seleccionar todos los que apliquen)",
+          "type": "multi_select",
+          "required": false,
+          "maps_to_step": "STEP-4",
+          "options": [
+            { "value": "oauth_tokens",        "label": "OAuth 2.0 / OIDC tokens", "activates_flags": ["oauth_tokens"] },
+            { "value": "api_keys",            "label": "API keys estáticas o rotativas", "activates_flags": ["api_keys"] },
+            { "value": "delegated_credentials","label": "Credenciales delegadas / heredadas del usuario", "activates_flags": ["delegated_credentials"] }
+          ],
+          "depends_on": {
+            "operator": "OR",
+            "conditions": [
+              { "question_id": "Q-AUTH-01", "answer_value": true },
+              { "question_id": "Q-AUTH-02", "answer_value": true }
+            ]
+          }
+        },
+        {
+          "question_id": "Q-AUTH-04",
+          "text": "¿El agente acepta o actúa sobre mensajes o instrucciones de otros agentes sin verificar su identidad de forma independiente?",
+          "type": "boolean",
+          "required": false,
+          "maps_to_step": "STEP-4",
+          "activates_flags": ["inter_agent_trust"],
+          "depends_on": null
+        }
+      ]
+    },
+    {
+      "section_id": "SEC-06",
+      "title": "Interacción con usuarios humanos",
+      "description": "Evalúa la naturaleza y alcance de la interacción del agente con personas. Corresponde a STEP-5 del Taxonomy Navigator.",
+      "maps_to_kb_section": ["capability_taxonomy.STEP-5"],
+      "questions": [
+        {
+          "question_id": "Q-HUM-01",
+          "text": "¿El agente interactúa directamente con usuarios humanos mediante lenguaje natural (chat, voz, interfaz conversacional)?",
+          "type": "boolean",
+          "required": true,
+          "maps_to_step": "STEP-5",
+          "activates_flags": ["human_interaction", "natural_language_communication", "user_facing_interface"],
+          "depends_on": null
+        },
+        {
+          "question_id": "Q-HUM-02",
+          "text": "¿El agente requiere aprobación humana antes de ejecutar acciones de alto impacto (envío de emails, transferencias, modificaciones de datos, etc.)?",
+          "type": "boolean",
+          "required": false,
+          "maps_to_step": "STEP-5",
+          "activates_flags": ["human_in_the_loop", "approval_workflows"],
+          "depends_on": {
+            "operator": "OR",
+            "conditions": [{ "question_id": "Q-HUM-01", "answer_value": true }]
+          }
+        },
+        {
+          "question_id": "Q-HUM-03",
+          "text": "¿El agente genera recomendaciones, consejos o contenido diseñado para influir en las decisiones del usuario?",
+          "type": "boolean",
+          "required": false,
+          "maps_to_step": "STEP-5",
+          "activates_flags": ["persuasive_output"],
+          "depends_on": {
+            "operator": "OR",
+            "conditions": [{ "question_id": "Q-HUM-01", "answer_value": true }]
+          }
+        },
+        {
+          "question_id": "Q-HUM-04",
+          "text": "¿El agente proporciona explicaciones o justificaciones de sus propias decisiones al usuario?",
+          "type": "boolean",
+          "required": false,
+          "maps_to_step": "STEP-5",
+          "activates_flags": ["explainability_features"],
+          "depends_on": {
+            "operator": "OR",
+            "conditions": [{ "question_id": "Q-HUM-01", "answer_value": true }]
+          }
+        }
+      ]
+    },
+    {
+      "section_id": "SEC-07",
+      "title": "Arquitectura multi-agente",
+      "description": "Evalúa si el agente opera dentro de un sistema de múltiples agentes y qué rol cumple. Corresponde a STEP-6 del Taxonomy Navigator.",
+      "maps_to_kb_section": ["capability_taxonomy.STEP-6"],
+      "questions": [
+        {
+          "question_id": "Q-MULTI-01",
+          "text": "¿El agente opera como parte de un sistema de múltiples agentes que colaboran entre sí?",
+          "type": "boolean",
+          "required": true,
+          "maps_to_step": "STEP-6",
+          "activates_flags": ["multi_agent_architecture"],
+          "depends_on": null
+        },
+        {
+          "question_id": "Q-MULTI-02",
+          "text": "¿El agente actúa como orquestador, coordinando y asignando tareas a otros agentes subordinados?",
+          "type": "boolean",
+          "required": false,
+          "maps_to_step": "STEP-6",
+          "activates_flags": ["agent_orchestration", "central_orchestrator"],
+          "depends_on": {
+            "operator": "OR",
+            "conditions": [{ "question_id": "Q-MULTI-01", "answer_value": true }]
+          }
+        },
+        {
+          "question_id": "Q-MULTI-03",
+          "text": "¿El agente puede delegar sub-tareas a otros agentes especializados?",
+          "type": "boolean",
+          "required": false,
+          "maps_to_step": "STEP-6",
+          "activates_flags": ["agent_delegation"],
+          "depends_on": {
+            "operator": "OR",
+            "conditions": [{ "question_id": "Q-MULTI-01", "answer_value": true }]
+          }
+        },
+        {
+          "question_id": "Q-MULTI-04",
+          "text": "¿El agente opera en un modelo de enjambre o red de pares, sin un coordinador central, colaborando por consenso o votación?",
+          "type": "boolean",
+          "required": false,
+          "maps_to_step": "STEP-6",
+          "activates_flags": ["swarm_architecture", "peer_to_peer_agents"],
+          "depends_on": {
+            "operator": "OR",
+            "conditions": [{ "question_id": "Q-MULTI-01", "answer_value": true }]
+          }
+        },
+        {
+          "question_id": "Q-MULTI-05",
+          "text": "¿El agente envía o recibe mensajes directamente a/desde otros agentes como parte de su flujo de trabajo?",
+          "type": "boolean",
+          "required": false,
+          "maps_to_step": "STEP-6",
+          "activates_flags": ["inter_agent_communication", "agent_to_agent_trust"],
+          "depends_on": {
+            "operator": "OR",
+            "conditions": [{ "question_id": "Q-MULTI-01", "answer_value": true }]
+          }
+        }
+      ]
+    }
+  ]
+}

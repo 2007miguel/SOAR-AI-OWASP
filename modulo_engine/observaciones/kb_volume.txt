@@ -1,0 +1,219 @@
+KB_VOLUME — Contrato del volumen de solo lectura
+================================================================================
+
+Este directorio se monta como volumen RO en el contenedor engine. El código
+NO crea ni gestiona este directorio: lo recibe montado al arrancar.
+
+Quien cree el volumen debe respetar exactamente lo que aquí se especifica.
+Cualquier desviación provoca error en el arranque del contenedor (selfcheck
+o pydantic validation).
+
+--------------------------------------------------------------------------------
+MONTAJE ESPERADO
+--------------------------------------------------------------------------------
+
+  Host (este directorio)          Contenedor
+  ─────────────────────────────   ─────────────────
+  ./kb_volume/               →    /app/kb/          (read-only)
+
+  Variable de entorno requerida:
+    KB_PATH=/app/kb/owasp_asi_knowledge_base.json
+
+  En docker-compose.yml debe aparecer:
+    volumes:
+      - ./kb_volume:/app/kb:ro
+    environment:
+      KB_PATH: /app/kb/owasp_asi_knowledge_base.json
+
+  En desarrollo local (sin Docker), KB_PATH puede apuntar a cualquier ruta
+  absoluta donde esté el archivo JSON.
+
+--------------------------------------------------------------------------------
+ARCHIVOS REQUERIDOS
+--------------------------------------------------------------------------------
+
+  1. owasp_asi_knowledge_base.json       ← OBLIGATORIO
+     Apuntado por KB_PATH. Es el único archivo que loader.py carga.
+     Origen: archivos_desarrollo/knoledge_base_sistema/owasp_asi_knowledge_base.json
+
+  2. agent_validation_wizard.json        ← OBLIGATORIO (selfcheck de cobertura de flags)
+     loader.load_wizard_flags lee coverage_validation.flag_coverage_map y el
+     selfcheck verifica al arranque que los flags del wizard y los cubiertos por
+     el KB (capability_taxonomy STEPs + operational_capabilities) coincidan
+     (arquitectura_sistema.txt §8; estructura_engine.txt §2/§3). Si falta el
+     archivo o hay un desfase de cobertura, el contenedor no arranca.
+     Nota: los capability_flags de cada evaluación llegan resueltos en el request;
+     este archivo se usa solo para la validación de integridad wizard↔KB al arrancar.
+     Origen: archivos_desarrollo/Entradas_del_sistema/wizard/agent_validation_wizard.json
+
+  3. agent_business_context.json         ← REFERENCIA / documentación
+     No lo consume el código en v1. Se incluye como referencia del esquema
+     de business_context para quien opere el volumen.
+     Origen: archivos_desarrollo/Entradas_del_sistema/business_context/agent_business_context.json
+
+--------------------------------------------------------------------------------
+ESTRUCTURA REQUERIDA EN owasp_asi_knowledge_base.json
+--------------------------------------------------------------------------------
+
+El archivo debe ser un JSON válido con al menos estas secciones de nivel superior.
+Las secciones no listadas aquí son ignoradas (extra="ignore" en pydantic).
+
+  {
+    "metadata": {
+      "version": "<string>",          ← requerido; se registra en cada AssessmentContext
+      ...
+    },
+
+    "capability_taxonomy": {
+      "steps": [                      ← array, mínimo 1 elemento
+        {
+          "step_id": "<string>",      ← requerido  ej. "STEP-1"
+          "capability_flags": [...],  ← array de strings
+          "activated_threats": [...], ← array de T-IDs  ej. ["T6","T7"]
+          "activated_risks": [...]    ← array de ASI-IDs (caché; validado por selfcheck)
+        }
+      ]
+    },
+
+    "threat_catalog": {
+      "threats": [                    ← array de amenazas T1–T17
+        {
+          "threat_id": "<string>",    ← requerido  ej. "T6"
+          "name": "<string>",         ← requerido
+          "maps_to_asi": [...]        ← array de ASI-IDs (puede ser [] para T9)
+        }
+      ]
+    },
+
+    "controls_catalog": {
+      "domains": [                    ← array de dominios CTRL-*
+        {
+          "domain_id": "<string>",    ← requerido  ej. "CTRL-AUTH"
+          "applicable_lifecycle_phases": ["design","build","runtime"],
+                                      ← requerido; se inyecta en cada control del dominio
+          "controls": [
+            {
+              "control_id": "<string>",   ← requerido  ej. "CTRL-AUTH-01"
+              "name": "<string>",         ← requerido
+              "description": "<string>",  ← requerido
+              "mitigates_threats": [...]  ← array de T-IDs
+            }
+          ]
+        }
+      ]
+    },
+
+    "assurance_methods": {
+      "methods": [                    ← array ASSUR-01 a ASSUR-05
+        {
+          "method_id": "<string>",    ← requerido  ej. "ASSUR-01"
+          "covers_risks": [...]       ← array de ASI-IDs
+        }
+      ]
+    },
+
+    "architecture_types": {
+      "types": [                      ← array; debe incluir ARCH-CROSS como baseline
+        {
+          "arch_id": "<string>",                  ← ej. "ARCH-SINGLE"
+          "security_practices": [...],            ← array de dicts (ver NORMALIZACIÓN abajo)
+          "priority_control_domains": [...]       ← array de strings
+        }
+      ]
+    },
+
+    "operational_capabilities": {
+      "capabilities": [               ← array OC-KC6.1 a OC-KC6.6
+        {
+          "capability_id": "<string>",        ← ej. "OC-KC6.6"
+          "capability_flag_refs": [...],      ← flags que activan este OC
+          "core_threats": [...],              ← T-IDs asociados
+          "controls": [...],                  ← array de dicts (acciones)
+          "special_note": "<string>"          ← opcional; presente en OC-KC6.6
+        }
+      ]
+    },
+
+    "verdict_framework": {
+      "critical_controls_by_risk": {  ← mapa ASI-ID → [CTRL-IDs obligatorios]
+        "ASI01": ["CTRL-PROMPT-01", ...],
+        "ASI02": [...],
+        ...                           ← debe cubrir ASI01–ASI10
+      },
+      "high_severity_risks": {
+        "risks": [...]                ← ASI-IDs cuyo control faltante → NOT_APT
+      },
+      "high_risk_business_domains": {
+        "domains": [...]              ← nombres de dominio que activan escalación
+      }
+    }
+  }
+
+--------------------------------------------------------------------------------
+NORMALIZACIÓN DE STAGING — architecture_types[].security_practices
+--------------------------------------------------------------------------------
+
+El engine espera security_practices como ARRAY DE DICTS (así lo modela
+kb/models.py y lo consume KBService.architecture_recommendations, que concatena
+las prácticas del arch_id con las de ARCH-CROSS). Es un campo SOLO INFORMATIVO
+(alimenta architecture_recos; NO afecta amenazas, ASI ni veredicto).
+
+El KB canónico (archivos_desarrollo/) trae este campo como OBJETO indexado por
+dominio de seguridad. Al stagear el KB en el volumen hay que normalizarlo a la
+forma de array. Esta transformación es el único ajuste requerido del KB canónico
+para cumplir el contrato del volumen; el resto de secciones se copian tal cual.
+
+  Forma canónica (origen):
+    "security_practices": {
+      "<dominio>": { "source_section": "...", "practices": ["...", ...] },
+      ...
+    }
+
+  Forma requerida en el volumen (destino):
+    "security_practices": [
+      { "domain": "<dominio>", "source_section": "...", "practices": ["...", ...] },
+      ...
+    ]
+
+IMPORTANTE (evitar drift): esta normalización debe hacerse de forma reproducible
+como paso de staging (script/pipeline de despliegue), NO editando el JSON a mano.
+Si el KB canónico se actualiza, reaplicar la misma transformación al re-stagear.
+
+--------------------------------------------------------------------------------
+VALIDACIONES QUE CORRE EL CÓDIGO AL ARRANCAR (selfcheck.py)
+--------------------------------------------------------------------------------
+
+Si cualquiera de estas falla, el contenedor no arranca.
+
+  1. COHERENCIA DE activated_risks (Appendix A)
+     Para cada STEP en capability_taxonomy.steps:
+       union( threat_catalog[T].maps_to_asi para T en activated_threats )
+       debe ser igual a activated_risks del STEP.
+     Detecta ediciones manuales del JSON que rompan la consistencia con OWASP.
+
+  2. CTRL-IDs HUÉRFANOS EN verdict_framework
+     Todo CTRL-ID que aparezca en critical_controls_by_risk debe existir
+     como control_id en al menos un dominio de controls_catalog.
+     Un ID huérfano haría que M5 construya un checklist con controles que
+     no pueden enriquecerse con nombre ni descripción.
+
+  3. COBERTURA DE FLAGS (wizard vs KB)
+     Los flags de agent_validation_wizard.json (coverage_validation.
+     flag_coverage_map) deben coincidir con los cubiertos por el KB
+     (capability_taxonomy.steps[].capability_flags + operational_capabilities.
+     capability_flag_refs). Un flag del wizard sin cobertura en el KB sería
+     ignorado por el pipeline; un flag del KB ausente del wizard nunca se
+     activaría. Requiere el archivo del wizard en el volumen.
+
+--------------------------------------------------------------------------------
+NOTAS OPERATIVAS
+--------------------------------------------------------------------------------
+
+  - El archivo JSON debe ser UTF-8 sin BOM.
+  - No renombrar los archivos: el código referencia el nombre exacto via KB_PATH.
+  - No modificar el JSON en caliente: el KB se carga una sola vez al arrancar.
+    Para actualizar el KB hay que reiniciar el contenedor con el nuevo archivo.
+  - La versión del KB (metadata.version) queda registrada en cada AssessmentContext
+    para garantizar reproducibilidad de los veredictos.
+
+================================================================================

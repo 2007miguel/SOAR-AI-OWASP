@@ -1,0 +1,350 @@
+================================================================================
+SISTEMA DE VALIDACIÓN Y ASEGURAMIENTO DE AGENTES DE IA
+Basado en el marco OWASP para Aplicaciones Agénticas
+================================================================================
+
+
+BASE DOCUMENTAL Y ORIGEN DEL CONOCIMIENTO
+────────────────────────────────────────────────────────────────────────────────
+
+El sistema se construye sobre tres documentos oficiales de OWASP específicos
+para sistemas de IA agéntica:
+
+  1. OWASP Top 10 for Agentic AI (ASI01–ASI10)
+     Define los 10 riesgos de más alto nivel para agentes de IA. Cada riesgo
+     (ASI) agrupa amenazas relacionadas y sirve como clasificador de severidad.
+
+  2. Agentic AI Threats and Mitigations v1.1 (T1–T17)
+     Catálogo de 17 amenazas granulares con descripción técnica, escenarios de
+     explotación, mitigaciones y un navegador de taxonomía (Taxonomy Navigator)
+     que conecta capacidades operativas del agente con amenazas específicas.
+     Incluye el Appendix A: la matriz canónica que mapea cada amenaza (T-ID)
+     a los riesgos OWASP (ASI-IDs) que activa.
+
+  3. Securing Agentic Applications Guide 1.0
+     Catálogo de controles de seguridad organizados en 8 dominios (autenticación,
+     datos, prompts, herramientas, comunicación inter-agente, supply chain,
+     monitoreo, deployment), 5 métodos de aseguramiento (ASSUR-01 a ASSUR-05)
+     y 6 playbooks operativos para respuesta a incidentes.
+
+Toda la información de estos tres documentos fue estructurada, normalizada y
+enlazada mediante identificadores compartidos en un único archivo JSON que
+actúa como base de conocimiento del sistema (Knowledge Base). El KB no infiere
+ni interpreta: replica fielmente la información oficial con identificadores
+trazables a sus fuentes. Cambiar de versión de OWASP implica actualizar el KB,
+no reescribir el sistema.
+
+
+QUÉ HACE EL SISTEMA
+────────────────────────────────────────────────────────────────────────────────
+
+Dado un agente de IA con ciertas capacidades declaradas, el sistema determina:
+
+  (a) Qué amenazas de seguridad están activas según esas capacidades.
+  (b) Qué riesgos OWASP activan esas amenazas.
+  (c) Qué controles de seguridad son obligatorios para mitigar esos riesgos.
+  (d) Si los controles están implementados y verificados.
+  (e) Si el agente es APTO para operar en producción.
+
+El resultado final es un veredicto con tres valores posibles:
+  - APT               Todos los controles críticos están cubiertos.
+  - APT_WITH_RESTRICTIONS   Hay controles menores pendientes o condiciones.
+  - NOT_APT           Hay riesgos críticos sin mitigar.
+
+El sistema es agnóstico al tipo de agente y al dominio de negocio. Funciona
+para cualquier agente siempre que sus capacidades sean declaradas correctamente
+al inicio.
+
+
+SUPUESTO DE DISEÑO: PEOR CASO CONSERVADOR
+────────────────────────────────────────────────────────────────────────────────
+
+El sistema trata cada capacidad activa en su nivel máximo de riesgo. Si un
+agente declara que ejecuta código, el sistema aplica todos los controles de
+ejecución de código, independientemente de si en la práctica esa ejecución
+está restringida. Esto es intencional: garantiza que ningún riesgo OWASP quede
+sin cobertura declarada. El resultado es conservador por diseño.
+
+
+LOS TRES INPUTS DEL SISTEMA
+────────────────────────────────────────────────────────────────────────────────
+
+El sistema recibe tres inputs al iniciar una evaluación:
+
+  1. WIZARD DE CAPACIDADES
+     Un cuestionario estructurado con preguntas de respuesta binaria (Sí/No) y
+     selección cerrada. Cubre 46 capability_flags organizados en 7 secciones:
+     tipo de agente, arquitectura, herramientas, capacidades operacionales (API,
+     código, base de datos, web, sistema operativo, sistemas críticos), memoria,
+     supervisión humana y ciclo de vida.
+     Cada respuesta afirmativa activa uno o más flags; los flags son la única
+     entrada que necesita el motor de análisis para arrancar.
+
+     Origen de los capability_flags: los flags se derivan directamente de las
+     6 preguntas del Taxonomy Navigator definido en "Agentic AI Threats and
+     Mitigations v1.1" (los 6 STEPs que conectan capacidades con amenazas) y
+     de los Key Components (KC1–KC6) y Operational Capabilities (OC-KC6.1–
+     KC6.6) definidos en "Securing Agentic Applications Guide 1.0". No son
+     categorías de elaboración propia: son la traducción directa de las
+     preguntas de activación de amenazas que propone OWASP.
+
+  2. CONTEXTO DE NEGOCIO
+     Tres campos estructurados que el evaluador declara:
+       - business_domain: sector de negocio del agente (finanzas, salud, etc.)
+       - architecture_id: patrón arquitectónico (ARCH-SINGLE, ARCH-CENTRAL,
+         ARCH-SWARM según si el agente actúa solo, tiene sub-agentes o forma
+         parte de un enjambre distribuido)
+       - lifecycle_phases: en qué fases está operando (diseño, build, runtime)
+     Estos campos no cambian el conjunto de riesgos del veredicto, pero escalan
+     recomendaciones y filtran controles por fase.
+
+     Origen de los tres campos:
+       - architecture_id: los patrones ARCH-SINGLE, ARCH-CENTRAL y ARCH-SWARM
+         están definidos en "Securing Agentic Applications Guide 1.0", que
+         describe las topologías de agentes y sus prácticas de seguridad
+         específicas por patrón.
+       - lifecycle_phases (design, build, runtime): las tres fases del ciclo
+         de vida y las prácticas de seguridad asociadas a cada una provienen
+         de "Securing Agentic Applications Guide 1.0" (sección lifecycle
+         security).
+       - business_domain: los dominios de negocio de alto riesgo que el sistema
+         usa para escalar el nivel de supervisión requerido (finanzas, salud,
+         infraestructura crítica, entre otros) están referenciados en "Securing
+         Agentic Applications Guide 1.0" a partir del Annex III del EU AI Act,
+         que el documento OWASP cita explícitamente.
+
+  3. AIBOM (AI Bill of Materials — esquema CycloneDX 1.6)
+     Inventario de componentes del agente: modelos, datasets, dependencias,
+     supply chain y datos sensibles declarados. En v1 su uso es específico:
+     la presencia de un AIBOM firmado constituye evidencia de attestación para
+     el control de supply chain (CTRL-SC-01), y los metadatos de datos sensibles
+     alimentan recomendaciones de protección de datos. No modifica el veredicto
+     directamente.
+
+
+ARQUITECTURA DEL SISTEMA: CAPAS Y MÓDULOS
+────────────────────────────────────────────────────────────────────────────────
+
+El sistema se organiza en 4 capas funcionales que separan responsabilidades
+de forma clara. Dentro de esas capas operan 7 módulos especializados más un
+componente de aseguramiento, todos coordinados por un orquestador central.
+
+  CAPA 1 — INTERFAZ / INTAKE
+    Punto de entrada. Recibe los 3 inputs del evaluador (wizard, contexto de
+    negocio, aibom) y crea el objeto de caso (Assessment Context) que fluirá
+    a través de todo el sistema.
+
+  CAPA 2 — ORQUESTADOR
+    Ejecuta el playbook: la secuencia declarativa de módulos y condiciones de
+    transición. No contiene lógica de seguridad; solo coordina. Gestiona errores,
+    warnings, ramificaciones y la pausa de aseguramiento. El playbook es un dato
+    (YAML/JSON), no código, lo que permite variantes sin tocar el orquestador.
+
+    Dentro de la Capa 2 operan dos planos bien diferenciados:
+
+    PLANO DETERMINISTA — módulos que son funciones puras sobre inputs y KB.
+    Sin efectos externos, reproducibles y cacheables:
+      M1 Intake & Validation, M2 ThreatMapper, M3 RiskMapper,
+      M4 ContextEscalator, M5 ControlResolver, M7 VerdictEngine, R Reporter.
+
+    PLANO DE ASEGURAMIENTO — el único componente no determinista:
+      M6 Assurance & Attestation, que gestiona la evidencia humana (HITL)
+      y la ejecución de herramientas externas (conectores).
+
+  CAPA 3 — KNOWLEDGE BASE SERVICE
+    Acceso de solo lectura al KB (owasp_asi_knowledge_base.json). Todos los
+    módulos consultan el KB a través de este servicio; ninguno hardcodea
+    semántica OWASP. Está versionado: cada evaluación registra qué versión
+    del KB usó, lo que garantiza reproducibilidad y auditabilidad.
+
+  CAPA 4 — PERSISTENCIA + REPORTING
+    Almacena cada Assessment Context y su historial de transiciones para
+    auditoría. Permite reanudar evaluaciones pausadas en aseguramiento y
+    produce el reporte final en formato legible y máquina.
+
+[ESPACIO RESERVADO PARA IMAGEN DE ARQUITECTURA POR CAPAS]
+
+La distinción entre plano determinista y plano de aseguramiento es la decisión
+arquitectónica central: los módulos M1–M5, M7 y R pueden correr, cachearse y
+reejecutarse sin ninguna herramienta externa ni intervención humana. El
+veredicto (M7) solo se puede calcular después de que M6 complete la recolección
+de evidencia. Esta es la razón de la pausa en el paso 6 del playbook.
+
+
+CÓMO FLUYE LA INFORMACIÓN: EL PIPELINE
+────────────────────────────────────────────────────────────────────────────────
+
+Los tres inputs atraviesan los 7 módulos en secuencia a través del Assessment
+Context: un único objeto de caso que cada módulo lee y enriquece. No hay
+estado oculto entre módulos; todo lo que un módulo produce lo escribe en ese
+mismo objeto.
+
+La derivación de riesgos sigue una sola vía, fiel al marco OWASP:
+
+  capability_flags → Taxonomy Navigator (STEPs) → Amenazas activas (T-IDs)
+    → Appendix A (maps_to_asi) → Riesgos activos (ASI-IDs)
+    → critical_controls_by_risk → Controles obligatorios → Veredicto
+
+No existe un camino directo entre capacidades y riesgos. El sistema siempre
+atraviesa los niveles intermedios (STEPs → T-IDs → ASI), porque así lo define
+la documentación OWASP y porque ese recorrido produce la trazabilidad completa
+que el veredicto necesita para ser auditable.
+
+
+LOS 7 MÓDULOS
+────────────────────────────────────────────────────────────────────────────────
+
+  M1 — INTAKE & VALIDATION
+     Recibe los tres inputs, verifica su completitud y consistencia.
+     Detecta inconsistencias entre el wizard y el contexto de negocio
+     (por ejemplo: arquitectura multi-agente declarada en business_context
+     pero flag multi_agent_architecture=false en el wizard). Los errores
+     bloqueantes detienen el pipeline; los warnings se acumulan y continúan.
+
+  M2 — THREATMAPPER
+     Para cada capability_flag activo, busca qué STEPs del Taxonomy Navigator
+     se activan. Por cada STEP activo extrae las amenazas (T-IDs) que le
+     corresponden según el KB. Produce el conjunto de amenazas activas con
+     trazabilidad completa: cada T-ID sabe qué flag y qué STEP lo originaron.
+
+  M3 — RISKMAPPER
+     Para cada T-ID activo, consulta el Appendix A (threat_catalog.maps_to_asi)
+     y acumula el conjunto de riesgos ASI activos. La relación es M:N: una
+     amenaza puede activar múltiples ASI, y un ASI puede agrupar múltiples
+     amenazas. El conjunto de ASI activos es la entrada que determina qué
+     controles son bloqueantes para el veredicto.
+     Caso especial T9 (Identity Spoofing): activa amenaza pero no tiene ASI
+     asociado en Appendix A. Sus controles aparecen como recomendaciones, no
+     como bloqueantes del veredicto. Esto es fiel a la documentación OWASP.
+
+  M4 — CONTEXTESCALATOR
+     Aplica el contexto de negocio y el aibom al análisis. Escala la supervisión
+     requerida si el agente opera en dominios de alto riesgo (finanzas, salud,
+     sistemas críticos — alineado al EU AI Act). Lee la arquitectura declarada
+     y agrega recomendaciones específicas de seguridad por patrón arquitectónico
+     (prácticas de ARCH-CROSS siempre incluidas). No modifica el conjunto de
+     ASI del veredicto.
+
+  M5 — CONTROLRESOLVER
+     Produce dos listas de controles con propósitos distintos:
+       Sub-path A (para el veredicto): consulta critical_controls_by_risk[ASI]
+       y obtiene los controles mínimos obligatorios para cada ASI activo.
+       Son 27 controles únicos que determinan APT / NOT_APT.
+       Sub-path B (para el reporte): consulta el catálogo completo de controles
+       (48 controles en 8 dominios), filtra por amenazas activas y por fase
+       del ciclo de vida, y produce la lista de recomendaciones. Los controles
+       del sub-path A son un subconjunto de esta lista.
+
+  M6 — ASSURANCE & ATTESTATION  [único módulo no completamente automatizable]
+     Gestiona la verificación de que los controles están implementados. Tiene
+     dos componentes:
+       Attestation intake (HITL): el evaluador recibe un checklist de controles
+       críticos (uno por cada CTRL-ID del sub-path A) y declara el estado de
+       implementación, aportando evidencia por control.
+       Connector manager: invoca herramientas de validación técnica (escáneres,
+       frameworks de red teaming, analizadores de comportamiento) y recolecta
+       los resultados como evidencia estructurada.
+     Los controles se dividen en tres categorías de validación:
+       herramienta_tecnica (28): verificables con herramientas automatizadas.
+       revision_configuracion (13): requieren inspección de configuración.
+       proceso_humano (7): requieren declaración formal o proceso organizacional.
+     Este módulo es el único punto de aseguramiento del pipeline. M7 no puede
+     emitir veredicto hasta que M6 haya completado la recolección de evidencia. 
+
+evidencia humana = attestación formal del evaluador sobre controles que no son verificables con una herramienta automatizada. 
+
+Eso es la "evidencia humana": la declaración del evaluador sobre el estado de cada control, acompañada del respaldo que la sustenta.
+
+La razón por la que esto no puede automatizarse completamente es que varios controles son de categoría proceso_humano — por ejemplo, si existe un kill switch para detener el agente en producción, si hay un plan de respuesta a incidentes documentado, o si hay políticas organizacionales de supervisión. Ninguna herramienta puede verificar eso: alguien tiene que declararlo y adjuntar el artefacto correspondiente.
+
+  M7 — VERDICTENGINE + REPORTER
+     Evalúa la cobertura de controles críticos contra el marco de decisión:
+       Si todos los controles del sub-path A están cubiertos → APT.
+       Si hay controles menores pendientes o HITL incompleto → APT_WITH_RESTRICTIONS.
+       Si falta un control crítico de un ASI de alta severidad
+       (ASI01, ASI02, ASI03, ASI05, ASI06) o no hay plan de respuesta a
+       incidentes → NOT_APT.
+     Genera el reporte final con veredicto, trazabilidad completa (flag →
+     amenaza → riesgo → control), lista de controles pendientes y recomendaciones
+     completas del sub-path B y los playbooks aplicables.
+
+
+SEPARACIÓN ENTRE TAXONOMÍA Y DECISIÓN
+────────────────────────────────────────────────────────────────────────────────
+
+El marco OWASP define la taxonomía de riesgos y controles, pero no define
+cuándo un agente es "apto para producción". Esa definición es la contribución
+propia del sistema, declarada explícitamente:
+
+  Taxonomía (100% OWASP): capability_flags → Threats → ASI → controls.
+  Decisión (capa del sistema): APT / APT_WITH_RESTRICTIONS / NOT_APT,
+  los umbrales de alta severidad y la lógica de evaluación de cobertura.
+
+Esta separación es deliberada: permite auditar que el sistema sigue el marco
+OWASP en la capa de análisis, y auditar que los criterios de producción son
+razonables en la capa de decisión, sin mezclar ambas responsabilidades.
+
+
+TRAZABILIDAD Y AUDITABILIDAD
+────────────────────────────────────────────────────────────────────────────────
+
+El veredicto final incluye la traza completa de cada decisión:
+
+  Para cada control crítico requerido:
+    ← qué ASI lo requiere
+    ← qué T-IDs activaron ese ASI
+    ← qué capability_flags activaron esos T-IDs
+    ← qué evidencia avala que el control está implementado
+
+Esto permite que cualquier parte del veredicto sea rastreada hasta una
+capacidad declarada del agente y hasta el artículo OWASP correspondiente.
+No hay decisiones opacas.
+
+
+ESTRUCTURA DE ARCHIVOS DE DESARROLLO
+────────────────────────────────────────────────────────────────────────────────
+
+  knoledge_base_sistema/
+    owasp_asi_knowledge_base.json      Base de conocimiento completa (KB):
+                                       los tres documentos OWASP estructurados
+                                       y enlazados mediante identificadores.
+    owasp_asi_knowledge_base_GUIA.txt  Guía de lectura del KB: qué contiene
+                                       cada sección, cómo se conectan y qué
+                                       debe implementar el código.
+    pipeline_implementacion_GUIA.txt   Qué debe implementar cada módulo en
+                                       código: lógica, campos leídos/escritos,
+                                       condiciones, casos especiales.
+
+  Entradas_del_sistema/
+    wizard/agent_validation_wizard.json     Estructura del wizard (46 flags,
+                                            33 preguntas, 7 secciones).
+    business_context/agent_business_context.json  Estructura del contexto de
+                                                  negocio.
+    aibom/aibom.json                        Schema CycloneDX 1.6 con bindings
+                                            definidos para v1.
+
+  controles/
+    controles_paso5_validacion.csv     Los 48 controles con dominio, amenazas
+                                       que mitigan, métodos ASSUR aplicables,
+                                       categoría de validación y herramienta
+                                       sugerida.
+    controles.txt                      Explicación de las 3 categorías de
+                                       validación y uso de la tabla.
+
+  arquitectura/
+    arquitectura_sistema.txt           Diseño modular SOAR: orquestador,
+                                       playbook, Assessment Context, módulos,
+                                       conectores, servicios transversales.
+    assessment_context.txt             Contrato completo del objeto de caso:
+                                       estructura de 6 capas, estados, matriz
+                                       de lectura/escritura por módulo.
+    infraestructura_contenedores.txt   Distribución por contenedor, redes,
+                                       seguridad y camino de crecimiento.
+    estructura_modulos/                Estructura de archivos de desarrollo
+                                       para cada contenedor principal.
+
+  observaciones/
+    observaciones.txt                  Análisis y decisiones de diseño tomadas
+                                       durante la construcción del sistema base.
+
+================================================================================

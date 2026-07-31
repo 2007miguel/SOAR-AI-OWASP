@@ -1,0 +1,213 @@
+================================================================================
+GUÍA DEL CATÁLOGO DE CONTROLES
+Archivo: controles_paso5_validacion.csv
+================================================================================
+
+SECCIÓN 0 — QUÉ ES ESTE ARCHIVO
+────────────────────────────────────────────────────────────────────────────────
+
+controles_paso5_validacion.csv es el catálogo completo de controles de
+seguridad derivados del knowledge base (owasp_asi_knowledge_base.json),
+extraídos directamente de la documentación oficial OWASP (Securing Agentic
+Applications Guide 1.0).
+
+Este catálogo tiene dos usos dentro del sistema:
+
+  USO 1 — CHECKLIST DE ATTESTACIÓN (Paso 5, Sub-path A):
+    El pipeline selecciona de este catálogo los controles críticos requeridos
+    para cada agente específico, según sus ASI-IDs activos. El evaluador
+    atestigua si cada control está implementado. Ese resultado determina el
+    veredicto (APT / APT_WITH_RESTRICTIONS / NOT_APT).
+
+  USO 2 — CATÁLOGO DE RECOMENDACIONES (Paso 5, Sub-path B):
+    El pipeline selecciona todos los controles que mitigan las amenazas activas
+    del agente, filtrados por lifecycle_phases. Estos se presentan como
+    recomendaciones completas en el reporte de salida.
+
+IMPORTANTE: Los 48 controles son fijos y provienen de la documentación oficial.
+No se derivan del pipeline. Lo que el pipeline determina es cuáles de estos
+48 controles aplican a un agente específico en una evaluación específica.
+
+
+SECCIÓN 1 — CONTENIDO DEL CSV
+────────────────────────────────────────────────────────────────────────────────
+
+El catálogo contiene 48 controles distribuidos en 8 dominios:
+
+  CTRL-AUTH        (6 controles)  Authentication & Authorization
+  CTRL-DATA        (6 controles)  Data Protection
+  CTRL-PROMPT      (6 controles)  Prompt & Input/Output Security
+  CTRL-TOOL        (8 controles)  Tool Execution & Operational Capabilities
+  CTRL-INTERAGENT  (6 controles)  Inter-Agent Communication Security
+  CTRL-SC          (4 controles)  Supply Chain Security
+  CTRL-MON         (6 controles)  Monitoring / Logging & Incident Response
+  CTRL-DEP         (6 controles)  Secure Deployment & Runtime Hardening
+
+
+SECCIÓN 2 — COLUMNAS DEL CSV
+────────────────────────────────────────────────────────────────────────────────
+
+  control_id
+    Identificador único del control. Formato: CTRL-{DOMINIO}-{NN}.
+    Ejemplo: CTRL-PROMPT-01, CTRL-TOOL-04, CTRL-MON-01.
+
+  dominio
+    Categoría a la que pertenece el control. Corresponde al campo domain_id
+    del controls_catalog en el knowledge base.
+
+  nombre
+    Nombre original del control en inglés, tal como aparece en la
+    documentación OWASP. No se traduce para mantener trazabilidad.
+
+  descripcion_breve
+    Resumen del control en español. Captura el propósito y la acción principal.
+    La descripción completa está en controls_catalog[].controls[].description
+    del knowledge base.
+
+  mitigates_threats
+    T-IDs que el control mitiga, separados por |. Conecta este catálogo con
+    el threat_catalog del knowledge base. El pipeline usa este campo en el
+    Sub-path B para seleccionar controles relevantes según T-IDs activos.
+
+  lifecycle_phases
+    Fases del ciclo de vida en las que aplica el control, separadas por |.
+    Valores: design | build | runtime. El pipeline filtra controles por este
+    campo según lo declarado en business_context.lifecycle_phases.
+
+  critico_para_riesgo
+    ASI-IDs para los que este control es crítico (obligatorio para el veredicto),
+    separados por |. Se deriva de verdict_framework.critical_controls_by_risk.
+    Si el valor es -, el control no es crítico para ningún ASI pero puede ser
+    recomendado vía Sub-path B. Un control crítico faltante puede resultar en
+    NOT_APT si su ASI asociado es de alta severidad (ASI01/02/03/05/06).
+
+  assur_paso6
+    Método de aseguramiento del Paso 6 (ASSUR-01 a ASSUR-05) que complementa
+    la validación de este control. Indica qué método verificar para confirmar
+    que el control no solo existe sino que funciona bajo condiciones reales.
+    El paréntesis describe qué aspecto específico prueba ese método para
+    este control. Si el valor es -, el control no tiene un método ASSUR
+    directamente complementario (generalmente controles de política pura).
+
+  categoria_validacion
+    Categoría que indica cómo puede validarse este control en la práctica.
+    Ver Sección 3 para la descripción completa de cada categoría.
+
+  herramienta_validacion
+    Herramienta o método concreto sugerido para validar el control, alineado
+    con su categoria_validacion. El paréntesis indica el tipo de prueba o
+    aspecto específico que se valida con esa herramienta.
+
+
+SECCIÓN 3 — CATEGORÍAS DE VALIDACIÓN
+────────────────────────────────────────────────────────────────────────────────
+
+La columna categoria_validacion clasifica cada control en una de tres
+categorías según el mecanismo real de verificación disponible. Esta distinción
+es crítica: asignar una herramienta técnica a un control que solo admite
+revisión manual da una falsa sensación de automatización.
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │ herramienta_tecnica                                                     │
+  └─────────────────────────────────────────────────────────────────────────┘
+  El control puede verificarse ejecutando un ataque, scan, fuzzing o prueba
+  activa con una herramienta. La herramienta produce evidencia objetiva de
+  si el control funciona o falla.
+
+  Ejemplos de pruebas activas:
+    - Inyección de prompt malicioso y verificación de que fue bloqueado
+    - Intento de SQL injection en herramienta de BD y verificación de rechazo
+    - Escaneo de imagen de contenedor en busca de CVEs conocidos
+    - Test de rate limiting enviando N requests por segundo
+    - Sandbox escape attempt via código generado
+
+  Controles en esta categoría (28 de 48):
+    CTRL-AUTH-01/02, CTRL-DATA-01/02/04/05/06, CTRL-PROMPT-01 a 06,
+    CTRL-TOOL-01 a 08, CTRL-INTERAGENT-01, CTRL-SC-01/02/03,
+    CTRL-DEP-01/02/03/05
+
+  Herramientas representativas: promptfoo, AgentDojo, AgentFence,
+    AgentPoison, OWASP ZAP, testssl.sh, Trivy, Semgrep, Bandit,
+    Agentic Radar (en modo activo), pip-audit, npm audit
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │ revision_configuracion                                                  │
+  └─────────────────────────────────────────────────────────────────────────┘
+  El control no puede probarse con un ataque activo porque es un control de
+  configuración, arquitectura u observabilidad. Se verifica inspeccionando
+  que la configuración correcta existe o que el sistema de monitoreo está
+  correctamente establecido. Una herramienta puede asistir la revisión,
+  pero no genera evidencia de ataque exitoso o fallido.
+
+  Ejemplos de revisiones:
+    - Verificar que las políticas de IAM no tienen credenciales permanentes
+    - Confirmar que el IaC no tiene secrets hardcoded
+    - Verificar que Langfuse está configurado y recibiendo trazas
+    - Confirmar que el registry de agentes requiere firmas
+    - Inspeccionar que los logs tienen estructura append-only
+
+  Controles en esta categoría (13 de 48):
+    CTRL-AUTH-03/04/05, CTRL-INTERAGENT-02/03/05/06,
+    CTRL-MON-01/02/03/06, CTRL-DEP-04/06
+
+  Herramientas representativas: AWS IAM Access Analyzer, Checkov,
+    Agentic Radar (en modo análisis), Langfuse/LangSmith (verificación
+    de setup), SIEM test alert, verificación de integridad de logs
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │ proceso_humano                                                          │
+  └─────────────────────────────────────────────────────────────────────────┘
+  El control no tiene herramienta técnica ni revisión de configuración
+  automatizable. Su validación requiere un ejercicio operativo, una
+  revisión de política o una simulación conducida por personas. La evidencia
+  es documental o resultado de un ejercicio, no técnica.
+
+  Ejemplos de validación por proceso:
+    - Ejecutar un tabletop exercise del plan de respuesta a incidentes
+    - Simular la activación de un kill switch y verificar tiempo de respuesta
+    - Revisar manualmente que la política de clasificación de datos existe y
+      está documentada y comunicada al equipo
+    - Ejecutar una prueba manual de replay attack re-enviando un mensaje
+      capturado con nonce expirado
+
+  Controles en esta categoría (7 de 48):
+    CTRL-AUTH-06, CTRL-DATA-03, CTRL-INTERAGENT-04, CTRL-SC-04,
+    CTRL-MON-04/05
+
+  Métodos: tabletop exercises, checklists manuales, simulaciones operativas,
+    revisiones de política, pruebas manuales de protocolos
+
+
+SECCIÓN 4 — RELACIÓN CON EL PIPELINE
+────────────────────────────────────────────────────────────────────────────────
+
+Este CSV es una vista estática del catálogo. El pipeline lo usa de forma
+dinámica:
+
+  ENTRADA AL PIPELINE:
+    capability_flags{}  +  business_context{}  +  aibom{}
+
+  EL PIPELINE SELECCIONA DE ESTE CATÁLOGO:
+    Sub-path A → controles donde control_id está en
+                 verdict_framework.critical_controls_by_risk[ASI-ID activo]
+                 → checklist de attestación para el evaluador
+
+    Sub-path B → controles donde mitigates_threats[] contiene T-IDs activos
+                 Y lifecycle_phases[] intersecta con business_context.lifecycle_phases
+                 → catálogo de recomendaciones filtrado
+
+  LA CATEGORIA_VALIDACION INFORMA AL EVALUADOR:
+    herramienta_tecnica    → ejecutar la herramienta indicada y documentar resultado
+    revision_configuracion → revisar configuración con la herramienta indicada
+    proceso_humano         → ejecutar el ejercicio o revisión y documentar evidencia
+
+  EL ASSUR_PASO6 INDICA QUÉ MÉTODO DEL PASO 6 COMPLEMENTA LA VERIFICACIÓN:
+    Los resultados de ASSUR-01 a ASSUR-05 se usan como evidencia adicional
+    para la attestación del Módulo 6 del pipeline. Para veredicto APT, los
+    controles críticos de ASI01/02/03/05/06 requieren que ASSUR-01 (red
+    teaming) haya sido ejecutado.
+
+
+================================================================================
+FIN DEL DOCUMENTO
+================================================================================

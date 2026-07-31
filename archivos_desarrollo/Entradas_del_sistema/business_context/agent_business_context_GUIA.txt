@@ -1,0 +1,197 @@
+================================================================================
+GUÍA DEL CONTEXTO DE NEGOCIO DEL AGENTE
+Archivo: agent_business_context.json
+================================================================================
+
+SECCIÓN 0 — CONTEXTO Y PROPÓSITO
+────────────────────────────────────────────────────────────────────────────────
+
+El pipeline de validación necesita tres tipos de input para producir un
+veredicto completo:
+
+  1. Wizard (capability_flags)    → qué PUEDE hacer el agente técnicamente
+  2. Contexto de negocio          → en qué CONTEXTO opera el agente
+  3. aibom (CycloneDX)            → cómo está COMPUESTO el agente (supply chain)
+
+Este archivo cubre el segundo input. Sin él, el pipeline no puede aplicar
+escalaciones de riesgo por dominio, no puede filtrar controles por fase del
+ciclo de vida, y no puede ajustar el perfil de amenaza según la arquitectura.
+El veredicto sería genérico e incompleto.
+
+El aibom cubre metadata técnica del componente (nombre, modelo, dependencias,
+proveedor) pero NO cubre contexto operativo de despliegue. Ambos son necesarios
+y complementarios, no intercambiables.
+
+
+SECCIÓN 1 — QUÉ ES Y QUÉ PRODUCE
+────────────────────────────────────────────────────────────────────────────────
+
+agent_business_context.json es un esquema de definición: especifica qué campos
+deben ser recogidos, sus valores válidos, si son obligatorios, y a qué sección
+del knowledge base alimenta cada uno.
+
+No es un formulario de datos — es la definición de qué datos recoger. La
+instancia real (los valores concretos de un agente) se genera al completar
+este esquema para cada agente evaluado.
+
+Al completarse, produce un objeto de contexto con 3 campos que el pipeline
+consume antes de iniciar el análisis de capability_flags:
+
+  {
+    "business_domain":  "Healthcare",
+    "architecture_id":  "ARCH-CENTRAL",
+    "lifecycle_phases": ["build", "runtime"]
+  }
+
+
+SECCIÓN 2 — ESTRUCTURA DEL JSON
+────────────────────────────────────────────────────────────────────────────────
+
+El archivo tiene la siguiente estructura raíz:
+
+  schema_id             → identificador único del esquema
+  version               → versión del archivo
+  description           → propósito del esquema
+  knowledge_base_ref    → referencia al knowledge base que consume estos datos
+  fields{}              → definición de cada campo (3 campos, todos required)
+  completeness_validation{} → reglas de validación antes de iniciar el pipeline
+
+Cada CAMPO en fields{} contiene:
+
+  type              → tipo de entrada (single_select o multi_select)
+  required          → si es obligatorio (true) u opcional con default (false)
+  default           → valor por defecto cuando required=false y no se provee
+  description       → qué captura el campo y cuándo aplica el default
+  options[]         → valores válidos con label descriptivo
+  kb_ref            → nodo del knowledge base al que alimenta
+  pipeline_effect   → qué hace el pipeline con este valor
+
+
+SECCIÓN 3 — LOS TRES CAMPOS
+────────────────────────────────────────────────────────────────────────────────
+
+CAMPO 1: business_domain  [REQUIRED]
+  Qué es: el dominio de negocio en el que opera el agente.
+  Por qué es required: el knowledge base tiene una lista explícita de dominios
+    de alto riesgo (verdict_framework.high_risk_business_domains), derivada del
+    Anexo de la EU AI Act. Sin este campo, el sistema no puede saber si el
+    agente opera en Finance, Healthcare o Critical Infrastructure — dominios
+    donde los controles críticos son más estrictos y el umbral para APT sube.
+  Efecto en pipeline: si el valor está en high_risk_business_domains, se activa
+    escalación de riesgo y CTRL-DEP-05 exige Human-Over-The-Loop (supervisión
+    continua) en lugar de HITL estándar.
+  Nota sobre variabilidad: los dominios no listados como alto riesgo (Retail,
+    Technology, Other) se procesan con el perfil de riesgo estándar. "Other"
+    cubre cualquier dominio sin clasificación especial.
+  Cubierto indirectamente por: el dominio de alto riesgo implica datos sensibles
+    (Finance → datos financieros, Healthcare → PHI). La sensibilidad de datos
+    no necesita un campo separado porque el framework la resuelve a través de
+    la clasificación del dominio.
+
+CAMPO 2: architecture_id  [REQUIRED]
+  Qué es: el patrón arquitectural del agente (single, central, swarm).
+  Por qué es required: cada arquitectura tiene un paquete de prácticas de
+    seguridad y dominios de control prioritarios distintos en
+    architecture_types del knowledge base. Sirve para dar recomendaciones
+    ajustadas al patrón.
+  Efecto en pipeline: selecciona las security_practices y
+    priority_control_domains del nodo correspondiente, e incluye siempre el
+    baseline transversal de ARCH-CROSS. Estas son RECOMENDACIONES. IMPORTANTE:
+    la arquitectura NO añade amenazas ni ASI al conjunto que decide el
+    veredicto; el perfil de amenazas se deriva únicamente de los
+    capability_flags del wizard vía capability_taxonomy. Las amenazas de
+    coordinación multi-agente (T12,T13,T14) entran por los flags de STEP-6, no
+    por este campo. El campo specific_risks del nodo es informativo (evita que
+    ARCH-CROSS, que lista los 10 ASI, infle el veredicto de cualquier agente).
+  Validación cruzada: si architecture_id es ARCH-CENTRAL o ARCH-SWARM, el
+    wizard debe tener multi_agent_architecture=true. Si hay inconsistencia,
+    el sistema emite una advertencia (no bloquea, pero se reporta).
+
+CAMPO 3: lifecycle_phases  [REQUIRED, multi_select]
+  Qué es: en qué fase(s) del ciclo de vida se evalúa el agente.
+  Por qué es required: los controles del knowledge base tienen un campo
+    applicable_lifecycle_phases. Sin este input, el sistema no puede filtrar
+    qué controles son relevantes para la evaluación actual.
+  Efecto en pipeline: filtra el conjunto de controles verificables y
+    recomendables a los que aplican en las fases seleccionadas.
+
+POR QUÉ NO HAY MÁS CAMPOS:
+  Los frameworks OWASP no definen data_sensitivity ni user_base como inputs
+  de pipeline independientes. Sus preocupaciones están cubiertas por:
+  - data_sensitivity → resuelto por business_domain (dominio de alto riesgo
+    implica datos sensibles) y por el campo sensitiveData del aibom
+    (components[].modelCard.modelParameters.datasets[].sensitiveData)
+  - user_base → resuelto por los capability_flags del wizard
+    (human_interaction, user_facing_interface, human_in_the_loop)
+  Añadir campos sin nodo real en el knowledge base crearía referencias
+  inválidas y lógica propia no respaldada por el framework.
+
+
+SECCIÓN 4 — VALIDACIÓN DE COMPLETITUD
+────────────────────────────────────────────────────────────────────────────────
+
+Antes de iniciar el pipeline, el sistema ejecuta dos validaciones:
+
+  VALIDACIÓN 1: Presencia de campos required
+    Los tres campos son obligatorios. Si falta cualquiera →
+    el pipeline se rechaza con error de completitud. No se produce veredicto.
+
+  VALIDACIÓN CRUZADA (cross-input):
+    Se compara este JSON contra la salida del wizard:
+    - architecture_id ARCH-CENTRAL o ARCH-SWARM + multi_agent_architecture=false
+      en wizard → warning de inconsistencia (no bloquea, pero se reporta en
+      el reporte de salida para revisión humana)
+
+
+SECCIÓN 5 — CÓMO ENCAJA EN EL PIPELINE
+────────────────────────────────────────────────────────────────────────────────
+
+Este JSON es el primer input que lee el pipeline, antes del wizard:
+
+  BUSINESS CONTEXT
+       │
+       ├─ business_domain  ──→  verdict_framework.high_risk_business_domains
+       │                        (activa o no escalación de riesgo y HOTL)
+       │
+       ├─ architecture_id  ──→  architecture_types
+       │                        (selecciona RECOMENDACIONES: security_practices
+       │                         y priority_control_domains + baseline ARCH-CROSS;
+       │                         NO altera el perfil de amenazas del veredicto)
+       │
+       └─ lifecycle_phases ──→  controls_catalog[*].applicable_lifecycle_phases
+                                (filtra controles relevantes para esta evaluación)
+
+  Luego entra el WIZARD (capability_flags) y el pipeline combina ambos
+  inputs para determinar el conjunto completo de amenazas activas,
+  controles aplicables y finalmente el veredicto.
+
+  El aibom entra de forma paralela como input de supply chain: informa sobre
+  dependencias y composición del componente, pero no afecta directamente
+  el flujo de capability_flags → amenazas → controles → veredicto.
+
+
+SECCIÓN 6 — LO QUE QUEDA FUERA DE V1
+────────────────────────────────────────────────────────────────────────────────
+
+Los siguientes inputs fueron analizados y descartados para v1:
+
+  data_sensitivity: no es un input de pipeline independiente en los frameworks
+    OWASP. El framework lo resuelve a través de business_domain (dominio de
+    alto riesgo implica datos sensibles) y a través del campo sensitiveData
+    del aibom (components[].modelCard.modelParameters.datasets[].sensitiveData).
+
+  user_base: no es un input de pipeline independiente en los frameworks OWASP.
+    El framework lo resuelve a través de los capability_flags del wizard
+    (human_interaction, user_facing_interface, human_in_the_loop).
+
+  agent_scope (restricciones por capability): define qué herramientas, dominios
+    o temas están permitidos o bloqueados dentro de cada capability activa.
+    No está definido en los frameworks OWASP. Se reserva para v2 como capa de
+    refinamiento del veredicto.
+
+  Marco regulatorio específico (GDPR, HIPAA): enriquece el análisis de
+    compliance pero no está mapeado en el knowledge base actual.
+
+================================================================================
+FIN DEL DOCUMENTO
+================================================================================

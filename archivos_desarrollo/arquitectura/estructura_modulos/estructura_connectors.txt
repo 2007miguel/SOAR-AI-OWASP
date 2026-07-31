@@ -1,0 +1,160 @@
+================================================================================
+ESTRUCTURA DE DESARROLLO — CONTENEDOR 3: connector-* (INTEGRACIONES)
+Una imagen por herramienta. Estructura general (plantilla común)
+Archivo: estructura_connectors.txt
+================================================================================
+
+
+SECCIÓN 0 — PROPÓSITO Y ALCANCE
+────────────────────────────────────────────────────────────────────────────────
+
+Los connector-* son los contenedores que envuelven cada herramienta externa de
+aseguramiento (promptfoo, OWASP ZAP, Trivy, Semgrep, AgentDojo, …). Hay UNA imagen
+por herramienta, y todas siguen la MISMA plantilla: una herramienta + un adaptador
+delgado que expone la interfaz uniforme:
+
+    run(target, config) -> evidence
+
+El assurance-coordinator los levanta EFÍMEROS por job, les pasa target+config,
+recibe la evidencia y los destruye. Los conectores no tienen estado, no acceden al
+KB ni a la base de datos, y corren sandboxeados.
+
+En SOAR, cada conector es una "integración". Añadir una herramienta = añadir una
+imagen que respete el contrato; nada más del sistema cambia.
+
+NOTA: aquí está la estructura GENERAL y la plantilla común. El detalle por
+herramienta se especificará después.
+
+Stack: NATIVO a cada herramienta (Node para promptfoo, Java para ZAP, Go para
+Trivy, Python para Semgrep/AgentDojo…). Por eso son contenedores separados. El
+adaptador se escribe en el lenguaje de la herramienta.
+
+
+SECCIÓN 1 — PRINCIPIOS
+────────────────────────────────────────────────────────────────────────────────
+
+C1. CONTRATO UNIFORME, IMPLEMENTACIÓN NATIVA
+    Todos exponen run(target, config) → evidence, aunque por dentro cada uno
+    invoque su herramienta de forma distinta. El coordinator los trata igual.
+
+C2. UN CONTENEDOR POR HERRAMIENTA
+    Runtimes en conflicto + aislamiento de seguridad. Cada imagen trae su tool.
+
+C3. EFÍMERO Y SANDBOXEADO
+    Sin persistencia, usuario no-root, filesystem read-only, red mínima (solo el
+    target), límites de CPU/memoria/tiempo. Se destruye tras el job. Esto aplica
+    al propio sistema los controles CTRL-TOOL-02 (sandboxing) y CTRL-DEP-01.
+
+C4. AUTODESCRIPTIVO
+    Cada conector declara en un manifest QUÉ cubre (ASSUR, controles, ASI) para
+    que el registry del coordinator lo seleccione sin lógica hardcodeada.
+
+C5. EVIDENCIA, NO VEREDICTO
+    Un conector reporta hallazgos y un verdict local (pass/fail/findings). NO
+    decide el veredicto del agente; eso es del engine.
+
+
+SECCIÓN 2 — PLANTILLA COMÚN DE UN CONECTOR
+────────────────────────────────────────────────────────────────────────────────
+
+  connector-<tool>/                  # una carpeta/imagen por herramienta
+  ├── Dockerfile                     # base runtime de la tool (node/java/go/python)
+  ├── README.md
+  ├── manifest.yaml                  # metadatos de cobertura y capacidades (Sección 3)
+  │
+  ├── adapter/                       # el adaptador delgado (contrato uniforme)
+  │   ├── entrypoint.(py|js|…)       # expone run(target, config) → evidence
+  │   ├── invoke.(…)                 # traduce config → invocación real de la tool
+  │   ├── parse.(…)                  # parsea la salida cruda de la tool
+  │   └── to_evidence.(…)            # mapea al esquema de evidencia común
+  │
+  ├── tool/                          # la herramienta (instalada por Dockerfile o vendored)
+  │
+  └── tests/
+      └── test_adapter.(…)           # entrada conocida → evidencia esperada
+
+
+  Ejemplos de instancias (misma plantilla, distinto runtime):
+
+    connector-promptfoo/   (Node)    prompt injection, output, PII      ASSUR-01/02
+    connector-zap/         (Java)    SQLi, XSS, SSRF, auth, API GW       ASSUR-01/05
+    connector-trivy/       (Go)      dependencias, contenedores (SC)     ASSUR-05
+    connector-semgrep/     (Python)  static analysis código generado     ASSUR-05
+    connector-agentdojo/   (Python)  tool injection, HITL bypass         ASSUR-01
+    connector-testssl/     (Shell)   TLS/mTLS inter-agente               ASSUR-04
+
+
+SECCIÓN 3 — EL manifest.yaml (autodescripción)
+────────────────────────────────────────────────────────────────────────────────
+
+  Cada conector se describe para que el coordinator lo seleccione. Ejemplo:
+
+    connector_id: connector-zap
+    tool: OWASP ZAP
+    runtime: java
+    covers:
+      assur: [ASSUR-01, ASSUR-05]
+      controls: [CTRL-AUTH-01, CTRL-TOOL-07, CTRL-PROMPT-06, CTRL-DEP-02]
+      asi: [ASI02, ASI03]
+    category: herramienta_tecnica
+    inputs:
+      target: { type: url }
+      config: { scan_profile: string, auth: object? }
+    limits: { cpu: "1", memory: "1Gi", timeout: "600s" }
+
+  El registry del assurance-coordinator lee estos manifests para saber qué
+  conector correr ante cada ASI/control activo.
+
+
+SECCIÓN 4 — EL CONTRATO DE INTERFAZ (uniforme para todos)
+────────────────────────────────────────────────────────────────────────────────
+
+  ENTRADA:
+    run(target, config)
+      target : qué se evalúa (URL del agente, imagen, repo, endpoint…)
+      config : parámetros del escaneo (perfil, credenciales, límites)
+
+  SALIDA (evidence) — esquema común que produce to_evidence:
+    {
+      connector_id : "connector-zap",
+      status       : "completed" | "error",
+      verdict      : "pass" | "fail" | "findings",   // local, no del agente
+      findings[]   : [{ id, severity, description, ref }],
+      control_ids? : [CTRL-IDs que esta corrida evidencia],
+      asi?         : [ASI-IDs relacionados],
+      raw_ref      : puntero al output crudo (para auditoría),
+      started_at, finished_at
+    }
+
+  Este esquema es el MISMO EvidenceBundle que el assurance-coordinator normaliza y
+  el engine (M7) consume. El contrato de evidencia debería vivir en un paquete
+  compartido versionado para que engine, coordinator y conectores coincidan.
+
+
+SECCIÓN 5 — CICLO DE VIDA DE UN CONECTOR (por job)
+────────────────────────────────────────────────────────────────────────────────
+
+  1. coordinator.selector elige connector-<tool> según ASI/ASSUR/categoría.
+  2. coordinator.dispatcher levanta el contenedor efímero con límites y red mínima.
+  3. adapter.entrypoint recibe (target, config).
+  4. adapter.invoke ejecuta la tool; adapter.parse lee su salida cruda.
+  5. adapter.to_evidence produce el evidence común.
+  6. el conector devuelve evidence y TERMINA; el dispatcher destruye el contenedor.
+  7. coordinator.normalizer integra la evidencia al EvidenceBundle.
+
+  Sin estado entre jobs. Cada corrida es independiente y reproducible.
+
+
+SECCIÓN 6 — CÓMO SE AÑADE UNA HERRAMIENTA NUEVA (extensión)
+────────────────────────────────────────────────────────────────────────────────
+
+  1. Crear connector-<nueva>/ desde la plantilla (Sección 2).
+  2. Escribir el adapter (invoke/parse/to_evidence) para esa tool.
+  3. Rellenar manifest.yaml (qué cubre, inputs, límites).
+  4. Registrar el conector en el registry del coordinator.
+  Nada más cambia: ni el engine, ni los contratos, ni el orquestador. Esta es la
+  propiedad de escalabilidad clave del patrón SOAR aplicado aquí.
+
+================================================================================
+FIN DEL DOCUMENTO
+================================================================================

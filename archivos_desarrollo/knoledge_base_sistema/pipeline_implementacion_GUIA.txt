@@ -1,0 +1,554 @@
+================================================================================
+GUÍA DE IMPLEMENTACIÓN DEL PIPELINE DE VALIDACIÓN
+Archivo: pipeline_implementacion_GUIA.txt
+================================================================================
+
+SECCIÓN 0 — PROPÓSITO Y ALCANCE
+────────────────────────────────────────────────────────────────────────────────
+
+Este documento describe qué debe implementarse en código para que el sistema
+de validación de agentes produzca un veredicto (APT / APT_WITH_RESTRICTIONS /
+NOT_APT). No describe la estructura del knowledge base (eso está en
+owasp_asi_knowledge_base_GUIA.txt) sino la lógica de ejecución que lo consume.
+
+El pipeline tiene 7 módulos. Algunos son 100% automatizables; uno requiere
+entrada humana o evidencia externa (Módulo 6). La distinción es crítica.
+
+Los tres inputs que el pipeline consume son:
+  [I-1] wizard output        → capability_flags{} (46 booleans)
+  [I-2] business_context     → business_domain, architecture_id, lifecycle_phases
+  [I-3] aibom (CycloneDX)   → componentes, supply chain, sensitiveData
+
+Los tres inputs se obtienen de:
+  [I-1] agent_validation_wizard.json (estructura) + respuestas del evaluador
+  [I-2] agent_business_context.json (estructura) + respuestas del evaluador
+  [I-3] aibom.json completado con los datos del agente evaluado
+
+El knowledge base que el pipeline lee es: owasp_asi_knowledge_base.json
+
+
+================================================================================
+MÓDULO 1 — VALIDACIÓN DE INPUTS
+================================================================================
+
+PROPÓSITO:
+  Verificar que los tres inputs están completos y son consistentes entre sí
+  antes de iniciar el análisis. Si hay errores bloqueantes, el pipeline se
+  detiene aquí y retorna un error de validación, no un veredicto.
+
+QUÉ IMPLEMENTAR:
+
+  1.1  VALIDACIÓN DE PRESENCIA (business_context)
+       Verificar que los tres campos required existen y tienen valor:
+         - business_domain   → no nulo, valor en la lista de opciones
+         - architecture_id   → no nulo, valor en {ARCH-SINGLE, ARCH-CENTRAL, ARCH-SWARM}
+         - lifecycle_phases  → no nulo, lista con al menos un valor válido
+       Si falta alguno → ERROR BLOQUEANTE. No continuar.
+
+  1.2  VALIDACIÓN DE COBERTURA DEL WIZARD (coverage_validation)
+       Leer wizard.coverage_validation.flag_coverage_map (46 entradas).
+       Para cada flag en el mapa, verificar que el wizard tiene la pregunta
+       correspondiente y que la pregunta tiene al menos un activates_flag.
+       Esta validación protege contra modificaciones al wizard que rompan
+       la cobertura.
+       Si hay gaps → WARNING (no bloquea la ejecución, pero se reporta).
+       Excepción documentada: critical_systems_access está en
+         operational_capabilities.OC-KC6.6, no en ningún STEP. No genera
+         error de cobertura.
+
+  1.3  VALIDACIÓN CRUZADA (cross-input)
+       Comparar business_context contra capability_flags del wizard:
+         REGLA: Si architecture_id es ARCH-CENTRAL o ARCH-SWARM,
+                entonces wizard.capability_flags.multi_agent_architecture
+                debe ser true.
+         (Opcional, reverso) Si multi_agent_architecture=true y
+                architecture_id = ARCH-SINGLE → WARNING de inconsistencia.
+         Si no coincide → WARNING (no bloquea, se incluye en el reporte).
+       Esta validación detecta inconsistencias entre lo que el evaluador
+       declaró en el wizard vs. lo que declaró en el contexto de negocio.
+
+  1.4  ROL DEL AIBOM EN v1 (input 3)
+       El aibom (CycloneDX) se recoge como tercer input pero su consumo en v1
+       es MÍNIMO y NO afecta el flujo capability_flags → amenazas → ASI →
+       veredicto. Bindings definidos para v1:
+         - Presencia de un aibom firmado/atestado → EVIDENCIA candidata para la
+           attestación de CTRL-SC-01 (SBOM/AIBOM con attestation), Módulo 6.
+         - components[].modelCard.modelParameters.datasets[].sensitiveData →
+           señal informativa para recomendaciones de data-protection (no cambia
+           ASI ni veredicto en v1).
+         - Vulnerabilidades/typosquats de componentes → insumo para el criterio
+           NOT_APT de supply chain (Módulo 7.3.d), si se dispone de ese dato.
+       Fuera de estos bindings, en v1 el aibom es informativo. NO deriva ASI ni
+       controles críticos por sí mismo. Su explotación plena se difiere a v2.
+
+  OUTPUT DEL MÓDULO 1:
+    - status: "ok" | "error" | "ok_with_warnings"
+    - errors[]: lista de errores bloqueantes (si status="error")
+    - warnings[]: lista de advertencias (si hay inconsistencias)
+
+
+================================================================================
+MÓDULO 2 — RESOLUCIÓN DE CAPACIDADES → T-IDs
+================================================================================
+
+PROPÓSITO:
+  Traducir los capability_flags activos a un conjunto de T-IDs (amenazas
+  concretas del catálogo de amenazas). Este es el primer paso analítico.
+
+QUÉ IMPLEMENTAR:
+
+  2.1  TRAVERSAL DE CAPABILITY_TAXONOMY
+       Para cada flag en capability_flags donde valor = true:
+         a) Buscar en knowledge_base.capability_taxonomy.steps[]
+            todos los steps donde ese flag aparece en capability_flags[].
+         b) Extraer el campo activated_threats[] de cada step encontrado.
+         c) Acumular todos los T-IDs en un set (sin duplicados).
+
+       Estructura en KB a leer:
+         capability_taxonomy.steps[i].capability_flags[]    → lista de flags
+         capability_taxonomy.steps[i].activated_threats[]   → T-IDs asociados
+       NOTA: el campo se llama activated_threats (no threat_ids). No usar el
+       campo activated_risks del STEP para nada analítico: es solo un caché
+       derivado de Appendix A (ver Módulo 3).
+
+  2.2  LA ARQUITECTURA NO AÑADE AMENAZAS AL VEREDICTO
+       architecture_types NO tiene un campo threat_ids. Sus campos son
+       specific_risks (ASI-IDs), priority_control_domains y security_practices.
+       Estos alimentan RECOMENDACIONES (ver Módulo 5, sub-path B), NO el
+       conjunto de amenazas/ASI que decide el veredicto. El perfil de amenazas
+       del veredicto se deriva EXCLUSIVAMENTE de los capability_flags vía
+       capability_taxonomy. Esto evita que, p.ej., ARCH-CROSS (specific_risks =
+       los 10 ASI) infle el veredicto de cualquier agente.
+
+       Estructura en KB (para recomendaciones, no veredicto):
+         architecture_types[arch_id].security_practices     → prácticas sugeridas
+         architecture_types[arch_id].priority_control_domains → dominios prioritarios
+         architecture_types[arch_id].specific_risks         → ASI típicos (informativo)
+
+  2.3  PATH ESPECIAL: critical_systems_access
+       Si capability_flags.critical_systems_access = true:
+         a) NO buscar en capability_taxonomy (no está mapeado ahí).
+         b) Ir directamente a operational_capabilities.OC-KC6.6.
+         c) Extraer core_threats[] y controls[] asociados a OC-KC6.6.
+         d) Aplicar el special_note (supervisión máxima / Human-Over-The-Loop).
+         e) Marcar en el reporte: "critical_systems_access procesado
+            vía OC-KC6.6 (path especial)".
+
+  2.4  DEDUPLICACIÓN
+       El mismo T-ID puede llegar desde múltiples STEPs. Usar un Set para
+       garantizar unicidad.
+
+  OUTPUT DEL MÓDULO 2:
+    - active_threat_ids: Set<string>  → ej. {"T1","T2","T3","T6","T9","T14"}
+    - source_map: {T-ID → [steps que lo activaron]}  → para trazabilidad
+
+
+================================================================================
+MÓDULO 3 — MAPEO T-IDs → ASI-IDs
+================================================================================
+
+PROPÓSITO:
+  Traducir las amenazas concretas (T-IDs) a las categorías de riesgo OWASP
+  ASI (ASI01–ASI10). La relación es M:N: un T-ID puede mapear a múltiples
+  ASI-IDs y un ASI-ID puede tener múltiples T-IDs.
+
+QUÉ IMPLEMENTAR:
+
+  3.1  DERIVAR ASI DESDE T-IDs (vía oficial Appendix A)
+       Para cada T-ID en active_threat_ids (del Módulo 2):
+         a) Leer knowledge_base.threat_catalog[T-ID].maps_to_asi[]  (este
+            campo replica exactamente la matriz oficial Appendix A del OWASP
+            Top 10 for Agentic AI).
+         b) Acumular todos los ASI-IDs en un set (sin duplicados).
+
+       Estructura en KB a leer:
+         threat_catalog[].threat_id        → identifica el T-ID
+         threat_catalog[].maps_to_asi[]    → ASI-IDs oficiales de ese T-ID
+
+       IMPORTANTE — dirección y fuente:
+         - Esta es la ÚNICA vía válida T→ASI y está 100% respaldada por OWASP.
+         - No usar capability_taxonomy.activated_risks como fuente: es solo un
+           caché derivado de esta misma operación.
+         - cross_mapping[] es la misma matriz pero indexada por ASI
+           (asi_to_llm_to_threats_to_aivss[].asi_id con .threats[]); sirve para
+           VERIFICACIÓN CRUZADA, no para el traversal directo por T-ID.
+
+       CASO T9: threat_catalog[T9].maps_to_asi = []. T9 no aporta ningún ASI
+       (OWASP no lo mapea en Appendix A). Sus controles se recomiendan en el
+       sub-path B, pero no genera controles críticos de veredicto.
+
+  3.2  DEDUPLICACIÓN
+       Igual que en el módulo anterior, usar un Set para ASI-IDs únicos.
+
+  3.3  (OPCIONAL) VERIFICACIÓN CRUZADA
+       Comparar el set obtenido contra cross_mapping (Appendix A) invertido.
+       Ante cualquier discrepancia, cross_mapping / threat_catalog.maps_to_asi
+       es la fuente de verdad.
+
+  OUTPUT DEL MÓDULO 3:
+    - active_asi_ids: Set<string>  → ej. {"ASI01","ASI02","ASI06","ASI09"}
+    - trace: {ASI-ID → [T-IDs que lo activaron]}  → para trazabilidad
+
+
+================================================================================
+MÓDULO 4 — ESCALACIÓN POR CONTEXTO DE NEGOCIO
+================================================================================
+
+PROPÓSITO:
+  Aplicar modificaciones al conjunto de riesgos y controles basadas en el
+  contexto declarado en business_context. Este módulo ajusta el perfil antes
+  de la resolución de controles.
+
+QUÉ IMPLEMENTAR:
+
+  4.1  ESCALACIÓN POR DOMINIO DE ALTO RIESGO
+       Verificar si business_domain está en:
+         verdict_framework.high_risk_business_domains.domains[]
+       Si SÍ:
+         a) Añadir CTRL-DEP-05 a la lista de controles críticos requeridos
+            (independientemente de qué ASI-IDs estén activos).
+         b) Marcar en el reporte: "high_risk_domain = true".
+         c) Marcar en el reporte: "Human-Over-The-Loop requerido".
+            Nota: HOTL es supervisión continua, más estricto que HITL estándar.
+            Referencia: CTRL-DEP-05 y verdict_framework.high_risk_business_domains.
+       Si NO: perfil de riesgo estándar, sin escalación adicional.
+
+  4.2  ARQUITECTURA → SOLO RECOMENDACIONES (no toca el veredicto)
+       La arquitectura NO añade amenazas ni ASI al conjunto que decide el
+       veredicto (ver Módulo 2.2). Su efecto es aportar recomendaciones:
+         - security_practices del arch_id declarado.
+         - priority_control_domains (dominios a priorizar en el reporte).
+         - specific_risks (ASI típicos del patrón, solo informativo).
+       Incluir SIEMPRE las prácticas de ARCH-CROSS como baseline transversal.
+       Las amenazas de coordinación multi-agente (T12, T13, T14) ya entran al
+       veredicto por los capability_flags de STEP-6 en el Módulo 2, no por la
+       arquitectura.
+
+  OUTPUT DEL MÓDULO 4:
+    - active_asi_ids: Set (sin cambios por arquitectura; solo puede sumar el
+      efecto de dominio de alto riesgo sobre controles críticos, no sobre ASI)
+    - high_risk_domain: boolean
+    - hotl_required: boolean
+    - architecture_recommendations: prácticas y dominios sugeridos (no veredicto)
+    - escalation_notes[]: lista de escalaciones aplicadas con motivo
+
+
+================================================================================
+MÓDULO 5 — RESOLUCIÓN DE CONTROLES
+================================================================================
+
+PROPÓSITO:
+  Determinar qué controles son requeridos (críticos para el veredicto) y
+  cuáles son recomendados. Opera en dos sub-paths paralelos.
+
+QUÉ IMPLEMENTAR:
+
+  SUB-PATH A — CONTROLES CRÍTICOS (para el veredicto)
+
+  5.A.1  LECTURA DE critical_controls_by_risk
+         Para cada ASI-ID en active_asi_ids:
+           a) Leer verdict_framework.critical_controls_by_risk[ASI-ID].
+           b) Extraer la lista de CTRL-IDs.
+           c) Acumular en un set de controles críticos requeridos.
+
+         Estructura en KB a leer:
+           verdict_framework.critical_controls_by_risk{
+             "ASI01": ["CTRL-PROMPT-01", "CTRL-PROMPT-02", "CTRL-TOOL-04", "CTRL-MON-01"],
+             "ASI02": ["CTRL-TOOL-01", "CTRL-TOOL-02", "CTRL-TOOL-03", "CTRL-MON-03"],
+             "ASI03": ["CTRL-AUTH-01", "CTRL-AUTH-02", "CTRL-AUTH-03", "CTRL-DEP-04"],
+             "ASI04": ["CTRL-SC-01", "CTRL-SC-02", "CTRL-SC-03"],
+             "ASI05": ["CTRL-TOOL-02", "CTRL-TOOL-06", "CTRL-DEP-01"],
+             "ASI06": ["CTRL-DATA-04", "CTRL-DATA-05", "CTRL-PROMPT-01", "CTRL-MON-01"],
+             "ASI07": ["CTRL-INTERAGENT-01", "CTRL-INTERAGENT-03", "CTRL-INTERAGENT-04"],
+             "ASI08": ["CTRL-MON-02", "CTRL-MON-04", "CTRL-DEP-06"],
+             "ASI09": ["CTRL-TOOL-04", "CTRL-MON-01", "CTRL-DEP-05"],
+             "ASI10": ["CTRL-INTERAGENT-06", "CTRL-MON-04", "CTRL-DEP-06"]
+           }
+
+  5.A.2  AÑADIR CTRL-DEP-05 SI high_risk_domain = true
+         Si el Módulo 4 marcó high_risk_domain=true, incluir CTRL-DEP-05
+         en el set de controles críticos requeridos.
+
+  5.A.3  ENRIQUECER CON METADATA DEL CONTROL
+         Para cada CTRL-ID en el set, leer su descripción completa desde
+         controls_catalog para incluirla en el checklist que se entrega
+         al evaluador:
+           controls_catalog.domains[d].controls[c].control_id
+           controls_catalog.domains[d].controls[c].name
+           controls_catalog.domains[d].controls[c].description
+
+  OUTPUT A:
+    - critical_controls_required: Set<CTRL-ID> con metadata completa
+      → Este es el checklist de attestación para el Módulo 6.
+
+  ──────────────────────────────────────────────────────────────────────────────
+
+  SUB-PATH B — CONTROLES RECOMENDADOS (catálogo filtrado)
+
+  5.B.1  TRAVERSAL DEL CONTROLS_CATALOG POR T-IDs ACTIVOS
+         Para cada T-ID en active_threat_ids:
+           a) Recorrer controls_catalog.domains[].controls[].
+           b) Si el control tiene ese T-ID en su campo mitigates_threats[],
+              añadirlo al set de controles recomendados.
+
+         Estructura en KB a leer:
+           controls_catalog.domains[d].controls[c].mitigates_threats[]
+           controls_catalog.domains[d].controls[c].applicable_lifecycle_phases[]
+
+  5.B.2  FILTRO POR LIFECYCLE_PHASES
+         Del set de controles recomendados, conservar solo los que tienen
+         al menos una fase en común con lifecycle_phases del business_context.
+
+         Ejemplo:
+           lifecycle_phases = ["runtime"]
+           Control con applicable_lifecycle_phases = ["design","build"]
+             → EXCLUIR (no aplica en runtime)
+           Control con applicable_lifecycle_phases = ["design","runtime"]
+             → INCLUIR
+
+  5.B.3  DEDUPLICACIÓN
+         Un control puede aparecer porque mitiga múltiples T-IDs activos.
+         Incluirlo solo una vez en la lista.
+
+  OUTPUT B:
+    - recommended_controls: lista ordenada por dominio, con metadata completa,
+      filtrada a las fases del ciclo de vida declaradas.
+
+  ──────────────────────────────────────────────────────────────────────────────
+
+  OUTPUT TOTAL DEL MÓDULO 5:
+    - critical_controls_required: checklist para attestación (Sub-path A)
+    - recommended_controls: catálogo filtrado (Sub-path B)
+
+
+================================================================================
+MÓDULO 6 — ATTESTACIÓN DE CONTROLES  [REQUIERE ENTRADA EXTERNA]
+================================================================================
+
+PROPÓSITO:
+  Recopilar la evidencia de que los controles críticos están implementados.
+  Este módulo NO es automatizable: el sistema entrega el checklist y el
+  evaluador (humano, herramienta, o combinación) provee las respuestas.
+
+QUÉ IMPLEMENTAR:
+
+  6.1  GENERACIÓN DEL CHECKLIST DE ATTESTACIÓN
+       El sistema genera un documento/formulario con cada CTRL-ID de
+       critical_controls_required, incluyendo:
+         - control_id, nombre, descripción
+         - por qué se requiere (ASI-IDs que lo hacen necesario)
+         - campo de respuesta: implemented | partial | not_implemented
+         - campo de evidencia: texto libre o referencia a documento/test
+
+  6.2  MÉTODOS DE ASEGURAMIENTO SUGERIDOS
+       Para cada ASI-ID activo, el sistema debe sugerir el ASSUR-ID relevante:
+         active_asi_ids → assurance_methods[m].covers_risks[] → ASSUR-IDs
+
+       Los ASSUR-IDs disponibles son:
+         ASSUR-01  Red Teaming           → cubre ASI01,02,03,05,06
+                   Herramientas: AgentDojo, AgentFence, ASB, AgentPoison,
+                                 Agentic Radar, Agent-SafetyBench, MAPS
+         ASSUR-02  Behavioral Testing    → cubre ASI01,06,08,09,10
+                   Herramientas: Inspect_evals, GenAI Eval (Google),
+                                 Bedrock Evaluations (Amazon)
+         ASSUR-03  Explainability Audits → cubre ASI08,09,10
+                   Técnicas: CoT traces, HITL, SHAP/LIME/Grad-CAM, XAI
+         ASSUR-04  Runtime Monitoring    → cubre ASI02,06,07,08,10
+                   Técnicas: LLM I/O Scanning, Tool Monitoring, SIEM,
+                             Anomaly Detection, Circuit Breakers
+         ASSUR-05  Vulnerability Scanning → cubre ASI04,05
+                   Técnicas: DAST (OWASP ZAP), CVE scanners, infra scans
+
+       Los resultados de estas herramientas deben usarse como evidencia
+       para completar el campo "evidencia" del checklist de attestación.
+
+  6.3  CONDICIÓN ESPECIAL PARA VEREDICTO APT
+       El criterio APT en el verdict_framework exige explícitamente:
+         "Red teaming has been conducted for high-severity activated risks"
+       Por lo tanto, el sistema debe verificar que:
+         - Si algún ASI activo está en verdict_framework.high_severity_risks
+           (ASI01,02,03,05,06), el evaluador debe reportar que ASSUR-01 fue
+           ejecutado. Leer la lista del KB, no hardcodearla.
+       Si no hay evidencia de red teaming en esos casos → el veredicto
+       máximo alcanzable es APT_WITH_RESTRICTIONS, no APT.
+
+  6.4  INTEGRACIÓN CON EL MÓDULO 7
+       Una vez completado el checklist, el sistema recibe:
+         attestation_results: {
+           CTRL-ID: {
+             status: "implemented" | "partial" | "not_implemented",
+             evidence: "...",
+             assurance_method: "ASSUR-01"  (opcional)
+           }
+         }
+         red_teaming_completed: boolean
+         incident_response_plan: boolean
+
+  OUTPUT DEL MÓDULO 6:
+    - attestation_results: {CTRL-ID → status + evidencia}
+    - assurance_methods_used: [ASSUR-IDs ejecutados]
+    - red_teaming_completed: boolean
+    - incident_response_plan_defined: boolean
+
+
+================================================================================
+MÓDULO 7 — CÓMPUTO DEL VEREDICTO
+================================================================================
+
+PROPÓSITO:
+  Aplicar la lógica del verdict_framework para determinar el veredicto final.
+  Este módulo es 100% automatizable dado el output del Módulo 6.
+
+QUÉ IMPLEMENTAR:
+
+  7.1  VERIFICACIÓN PARA VEREDICTO APT
+       Condición: APT si TODOS los siguientes son verdaderos:
+         a) Todos los CTRL-IDs en critical_controls_required tienen
+            attestation_results[CTRL-ID].status = "implemented"
+         b) red_teaming_completed = true para todo ASI activo que esté en
+            verdict_framework.high_severity_risks
+         c) incident_response_plan_defined = true
+         d) CTRL-MON-01 (logging inmutable) está en implemented
+         e) Si high_risk_domain = true: CTRL-DEP-05 está implemented
+
+  7.2  VERIFICACIÓN PARA VEREDICTO APT_WITH_RESTRICTIONS
+       Condición: APT_WITH_RESTRICTIONS si:
+         a) Los controles core están implementados (no hay NOT_APT triggers)
+         Y al menos uno de:
+           - Algún control no crítico está "partial" o "not_implemented"
+           - HITL no está completamente implementado para todas las acciones
+             de alto impacto
+           - Red teaming está planificado pero no completado
+           - Baselines de monitoreo en establecimiento
+
+  7.3  VERIFICACIÓN PARA VEREDICTO NOT_APT
+       Condición: NOT_APT si CUALQUIERA de los siguientes es verdadero:
+         a) Algún CTRL-ID crítico de un ASI en
+            verdict_framework.high_severity_risks (ASI01,02,03,05,06) tiene
+            status = "not_implemented"
+         b) incident_response_plan_defined = false
+         c) CTRL-MON-01 tiene status = "not_implemented"
+            (sin logging inmutable no hay trazabilidad)
+         d) aibom indica componentes de supply chain sin verificar con
+            acceso directo a producción (supply_chain_unverified = true
+            con production_access = true)
+         e) red_teaming_completed = true Y se reportaron vulnerabilidades
+            críticas sin mitigar
+
+  7.4  PRIORIDAD DE EVALUACIÓN
+       Evaluar en este orden:
+         1. NOT_APT (condiciones bloqueantes)
+         2. APT (todas las condiciones positivas)
+         3. APT_WITH_RESTRICTIONS (caso intermedio)
+
+  7.5  CONSTRUCCIÓN DEL REPORTE FINAL
+       El sistema genera el reporte con toda la información de trazabilidad:
+         - verdict
+         - active_capability_flags: [flags activos]
+         - active_threat_ids: [T-IDs] con qué flags los activaron
+         - active_asi_ids: [ASI-IDs] con qué T-IDs los activaron
+         - high_risk_domain: boolean + dominio
+         - hotl_required: boolean
+         - critical_controls: {required:[], implemented:[], missing:[]}
+         - recommended_controls: lista filtrada por lifecycle_phases
+         - assurance_methods_required: [ASSUR-IDs relevantes + herramientas]
+         - assurance_evidence: resultados de ASSUR ejecutados
+         - warnings: inconsistencias cross-input, known_gaps
+         - verdict_rationale: texto explicando por qué se llegó al veredicto
+
+  OUTPUT DEL MÓDULO 7 (output final del sistema):
+    {
+      "verdict": "APT" | "APT_WITH_RESTRICTIONS" | "NOT_APT",
+      "verdict_label": "...",
+      "verdict_rationale": "...",
+      "active_risks": ["ASI01", "ASI06", ...],
+      "critical_controls": {
+        "required": ["CTRL-PROMPT-01", ...],
+        "implemented": ["CTRL-PROMPT-01", ...],
+        "missing": ["CTRL-MON-01", ...]
+      },
+      "recommended_controls": [...],
+      "required_assurance_methods": [
+        {
+          "method_id": "ASSUR-01",
+          "name": "Red Teaming",
+          "covers_risks": ["ASI01", "ASI02"],
+          "tools": [...]
+        }
+      ],
+      "hotl_required": false,
+      "high_risk_domain": true,
+      "warnings": [...],
+      "trace": {
+        "flags_to_threats": {...},
+        "threats_to_risks": {...}
+      }
+    }
+
+
+================================================================================
+RESUMEN: QUÉ VIVE EN CÓDIGO vs. QUÉ VIVE EN EL KNOWLEDGE BASE
+================================================================================
+
+  EN CÓDIGO (lógica del pipeline):
+    - Traversal de capability_taxonomy (activated_threats) flags → T-IDs   (M2)
+    - Derivación T-IDs → ASI-IDs vía threat_catalog.maps_to_asi (App. A)   (M3)
+    - Verificación de high_risk_business_domains y escalación             (M4)
+    - Traversal de critical_controls_by_risk para lista de controles      (M5-A)
+    - Traversal de controls_catalog con filtro por mitigates_threats      (M5-B)
+    - Filtro de controles por lifecycle_phases                            (M5-B)
+    - Generación del checklist de attestación                             (M6)
+    - Selección de ASSUR-IDs según ASI-IDs activos                       (M6)
+    - Evaluación de condiciones de veredicto                              (M7)
+    - Construcción del reporte final con trazabilidad                     (M7)
+
+  EN EL KNOWLEDGE BASE (datos, no lógica):
+    - capability_taxonomy.steps[].capability_flags[] y activated_threats[]
+    - threat_catalog[].maps_to_asi[]   (T-ID → ASI, réplica de Appendix A)
+    - cross_mapping[]                  (misma matriz indexada por ASI; verificación)
+    - architecture_types[ARCH-ID].security_practices / priority_control_domains
+      / specific_risks   (SOLO recomendaciones; NO alimentan el veredicto)
+    - verdict_framework.high_severity_risks.risks[]  (ASI bloqueantes de veredicto)
+    - verdict_framework.critical_controls_by_risk{}
+    - verdict_framework.high_risk_business_domains.domains[]
+    - verdict_framework.verdicts[].criteria
+    - controls_catalog.domains[].controls[].mitigates_threats[]
+    - controls_catalog.domains[].controls[].applicable_lifecycle_phases[]
+    - assurance_methods[].covers_risks[] y tools[]
+    - operational_capabilities.OC-KC6.6 (path especial de critical_systems_access)
+
+  NOTA: capability_taxonomy.steps[].activated_risks NO se usa como fuente; es
+  un caché derivado de threat_catalog.maps_to_asi (Appendix A). El pipeline
+  calcula los ASI por esa vía oficial, garantizando fidelidad al marco OWASP.
+
+  NO AUTOMATIZABLE (requiere entrada humana o herramienta externa):
+    - Attestación de si un control está implementado o no              (M6)
+    - Ejecución de red teaming (ASSUR-01) y sus herramientas           (M6)
+    - Ejecución de behavioral testing (ASSUR-02)                       (M6)
+    - Definición del plan de respuesta a incidentes                    (M6)
+
+
+================================================================================
+NOTA SOBRE EL MÓDULO 6 Y LA CONFIANZA DEL SISTEMA
+================================================================================
+
+El único punto de confianza externa en todo el pipeline es el Módulo 6.
+Todo lo demás es derivado mecánicamente del knowledge base y los inputs.
+
+Esto tiene una implicación de diseño: el sistema produce un veredicto tan
+confiable como la evidencia que el evaluador provee en la attestación. Si
+el evaluador marca un control como "implemented" sin evidencia real, el
+veredicto se basa en información no verificada.
+
+Para v1, esto es aceptable y es el modelo estándar de los sistemas de
+validación basados en OWASP. La verificación independiente es función del
+auditor o del equipo de seguridad, no del sistema automatizado.
+
+En versiones futuras se puede extender el Módulo 6 para:
+  - Integrar resultados de pipelines CI/CD (CTRL-DEP-03)
+  - Consumir reportes de herramientas de red teaming en formato estructurado
+  - Integrar con SIEMs para evidencia de CTRL-MON (monitoreo activo)
+
+================================================================================
+FIN DEL DOCUMENTO
+================================================================================

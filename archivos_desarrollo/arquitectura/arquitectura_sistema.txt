@@ -1,0 +1,535 @@
+================================================================================
+ARQUITECTURA DEL SISTEMA DE VALIDACIÓN Y ASEGURAMIENTO DE AGENTES DE IA
+Modelo modular tipo SOAR (orquestador + módulos + conectores)
+Archivo: arquitectura_sistema.txt
+================================================================================
+
+
+SECCIÓN 0 — PROPÓSITO DE ESTE DOCUMENTO
+────────────────────────────────────────────────────────────────────────────────
+
+Este documento describe la arquitectura de software del sistema: qué componentes
+lo forman (orquestador, playbook, módulos, conectores, servicios), qué recibe y
+qué produce cada uno, y cómo se correlacionan para ejecutar un flujo completo de
+validación de un agente de extremo a extremo.
+
+No describe el conocimiento OWASP (eso está en json_base_sistema/) ni la lógica
+de negocio del pipeline (eso está en pipeline_implementacion_GUIA.txt). Aquí se
+describe CÓMO se organiza el software que ejecuta ese pipeline.
+
+Terminología: se usa vocabulario SOAR (Security Orchestration, Automation and
+Response) porque el patrón encaja: un orquestador ejecuta un playbook que invoca
+módulos especializados y conectores a herramientas, con un objeto de caso que
+fluye entre todos y puntos de intervención humana (HITL).
+
+
+SECCIÓN 1 — PRINCIPIOS DE DISEÑO
+────────────────────────────────────────────────────────────────────────────────
+
+P1. MODULARIDAD POR CONTRATO
+    Cada módulo es una unidad con una única responsabilidad, que declara
+    explícitamente qué campos LEE y qué campos ESCRIBE en el objeto de caso
+    (Assessment Context, Sección 3). Los módulos no se conocen entre sí; solo
+    conocen el contrato. Esto permite reemplazar, testear o mover un módulo sin
+    tocar a los demás.
+
+P2. SEPARACIÓN EN DOS PLANOS (la decisión arquitectónica principal)
+    - PLANO DETERMINISTA: módulos que son funciones puras sobre (inputs + KB).
+      Sin efectos externos. Reproducibles, cacheables, testeables offline.
+      Son: Intake&Validation, ThreatMapper, RiskMapper, ContextEscalator,
+      ControlResolver, VerdictEngine, Reporter.
+    - PLANO DE ASEGURAMIENTO: el único componente con estado externo, conectores
+      a herramientas y entrada humana. Es el módulo Assurance (M6). Es el único
+      NO determinista.
+    Esta frontera es la que hace el sistema auditable y escalable.
+
+P3. EL CONOCIMIENTO ES DATO, NO CÓDIGO
+    Toda la semántica OWASP (flags, amenazas, ASI, controles, mapeos) vive en el
+    Knowledge Base como dato versionado. Cambiar OWASP = nueva versión del KB, no
+    cambio de código. Los módulos son motores genéricos que consultan el KB.
+
+P4. FIDELIDAD AL MARCO OWASP
+    La derivación de riesgos sigue una sola vía oficial:
+      capability_flags → Step → Threats (activated_threats) → Appendix A
+      (threat_catalog.maps_to_asi) → ASI.
+    Los módulos NO deben introducir criterio propio en la taxonomía. El único
+    lugar con criterio propio declarado es la capa de veredicto (VerdictEngine +
+    verdict_framework), porque OWASP no define aptitud para producción.
+
+P5. UN SOLO OBJETO DE CASO
+    Todo el estado de una evaluación vive en un único objeto (Assessment
+    Context) que el orquestador crea, versiona y pasa de módulo en módulo. No hay
+    estado compartido oculto entre módulos.
+
+P6. ESCALABILIDAD POR EXTENSIÓN, NO POR MODIFICACIÓN
+    Añadir una herramienta = añadir un conector. Añadir un flag/control = editar
+    el KB. Añadir una fase (p.ej. agent_scope de v2) = insertar un módulo. El
+    núcleo no se toca.
+
+
+SECCIÓN 2 — VISTA GENERAL DE CAPAS
+────────────────────────────────────────────────────────────────────────────────
+
+  ┌───────────────────────────────────────────────────────────────────────┐
+  │ CAPA 1 — INTERFAZ / INTAKE                                             │
+  │   Recolectores de los 3 inputs + fachada de acceso (API / CLI)        │
+  └───────────────────────────────┬───────────────────────────────────────┘
+                                   │ crea el Assessment Context
+  ┌───────────────────────────────▼───────────────────────────────────────┐
+  │ CAPA 2 — ORQUESTADOR (motor de playbook)                              │
+  │   Carga el playbook, ejecuta módulos en orden, maneja errores/warnings,│
+  │   versiona el caso, decide ramificaciones (p.ej. path critical systems)│
+  └───────┬───────────────────────────────────────────────────┬───────────┘
+          │                                                     │
+  ┌───────▼──────── PLANO DETERMINISTA ────────┐   ┌────────────▼─── PLANO DE ASEGURAMIENTO ──┐
+  │  M1 Intake & Validation                    │   │  M6 Assurance & Attestation             │
+  │  M2 ThreatMapper                           │   │    ├─ Attestation intake (HITL)         │
+  │  M3 RiskMapper                             │   │    └─ Connector manager → conectores    │
+  │  M4 ContextEscalator                       │   │         (herramientas externas)         │
+  │  M5 ControlResolver                        │   │                                         │
+  │  M7 VerdictEngine                          │   │                                         │
+  │  R  Reporter                               │   │                                         │
+  └───────┬─────────────────────────────────────┘   └────────────┬──────────────────────────┘
+          │                                                       │
+  ┌───────▼───────────────────────────────────────────────────────▼───────┐
+  │ CAPA 3 — KNOWLEDGE BASE SERVICE (solo lectura, versionado)            │
+  │   owasp_asi_knowledge_base.json + schemas de wizard y business_context │
+  └───────────────────────────────────────────────────────────────────────┘
+  ┌───────────────────────────────────────────────────────────────────────┐
+  │ CAPA 4 — PERSISTENCIA + REPORTING                                     │
+  │   Assessment store (casos y versiones) · generador de reportes         │
+  └───────────────────────────────────────────────────────────────────────┘
+
+
+SECCIÓN 3 — EL OBJETO DE CASO: "ASSESSMENT CONTEXT"
+────────────────────────────────────────────────────────────────────────────────
+
+Es el backbone de la arquitectura. Un único objeto que representa UNA evaluación
+de UN agente. El orquestador lo crea al iniciar y lo pasa a cada módulo; cada
+módulo lee unos campos y escribe otros. Estructura conceptual:
+
+  AssessmentContext {
+    // identidad y metadatos
+    assessment_id            // id único de la evaluación
+    kb_version               // versión del KB usada (para reproducibilidad)
+    created_at, updated_at
+    status                   // "intake" | "analyzing" | "awaiting_assurance"
+                             //   | "scoring" | "completed" | "error"
+                             //   (scoring = M6 completó; M7 calculando veredicto)
+
+    // capa de inputs (escrito por Intake)
+    inputs {
+      capability_flags{}     // 46 flags boolean (del wizard)
+      business_context{}     // business_domain, architecture_id, lifecycle_phases
+      aibom{}                // CycloneDX (informativo en v1)
+    }
+
+    // capa de análisis (escrito por M2, M3, M4)
+    analysis {
+      active_steps[]         // STEPs activados
+      active_threats[]       // T-IDs activos  (+ source_map de trazabilidad)
+      active_asi[]           // ASI-IDs activos (+ trace T-ID → ASI)
+      high_risk_domain       // boolean
+      hotl_required          // boolean
+      architecture_recos{}   // security_practices + priority_control_domains
+      escalations[]
+      warnings[]             // inconsistencias cross-input, known_gaps, T9, etc.
+    }
+
+    // capa de controles (escrito por M5)
+    controls {
+      critical_required[]    // Sub-path A: controles críticos del veredicto
+      recommended[]          // Sub-path B: catálogo filtrado por lifecycle
+    }
+
+    // capa de aseguramiento (escrito por M6)
+    assurance {
+      checklist[]            // items a atestiguar (uno por control crítico)
+      attestations{}         // CTRL-ID → {status, evidence, assurance_method}
+      tool_results[]         // evidencia de conectores (promptfoo, ZAP, …)
+      red_teaming_done       // boolean
+      incident_response_plan // boolean
+      assurance_methods_used[]
+    }
+
+    // capa de decisión (escrito por M7)
+    verdict {
+      result                 // APT | APT_WITH_RESTRICTIONS | NOT_APT
+      rationale              // explicación legible
+      trace{}                // flags→threats, threats→risks, risk→controls
+    }
+  }
+
+REGLA: ningún módulo lee estado fuera de este objeto (salvo el KB, que es solo
+lectura). Todo lo que un módulo produce, lo escribe aquí.
+
+
+SECCIÓN 4 — EL ORQUESTADOR
+────────────────────────────────────────────────────────────────────────────────
+
+QUÉ ES:
+  El componente que ejecuta el playbook. No contiene lógica de negocio de
+  seguridad; solo coordina. Es el "cerebro de control", no el "cerebro de
+  análisis".
+
+RESPONSABILIDADES:
+  - Crear el Assessment Context al recibir los inputs.
+  - Cargar el playbook (Sección 5) y ejecutar sus pasos en orden.
+  - Invocar cada módulo pasándole el contexto; recibir el contexto enriquecido.
+  - Manejar el resultado de cada módulo: continuar, ramificar, pausar o abortar.
+  - Gestionar errores bloqueantes (status="error") y warnings (se acumulan y
+    continúa).
+  - Gestionar la PAUSA en el punto de aseguramiento: cuando M5 termina, si se
+    requiere attestación humana o ejecución de herramientas, el orquestador deja
+    el caso en status="awaiting_assurance" y lo reanuda cuando llega la evidencia.
+  - Versionar y persistir el contexto en cada transición (para auditoría).
+
+ENTRADA:  inputs crudos (3) + id de playbook a ejecutar.
+SALIDA:   Assessment Context final (con verdict) + historial de transiciones.
+
+NOTA: el orquestador es agnóstico a los módulos concretos; los conoce por su
+contrato (nombre, campos que lee, campos que escribe). Esto permite añadir o
+reordenar módulos editando el playbook, no el orquestador.
+
+
+SECCIÓN 5 — EL PLAYBOOK
+────────────────────────────────────────────────────────────────────────────────
+
+QUÉ ES:
+  La definición declarativa de la secuencia de módulos y las reglas de
+  transición. Es un DATO (p.ej. un YAML/JSON), no código. El orquestador lo
+  interpreta. Permite tener variantes (p.ej. "validación completa" vs "quick
+  scan") sin cambiar el orquestador.
+
+PLAYBOOK POR DEFECTO — "FULL_VALIDATION":
+
+  Paso  Módulo               Condición de avance
+  ────  ───────────────────  ──────────────────────────────────────────────
+  1     Intake & Validation  Si status="error" → ABORTAR y reportar.
+  2     ThreatMapper         siempre
+  3     RiskMapper           siempre
+  4     ContextEscalator     siempre
+  5     ControlResolver      siempre → aquí se produce el checklist
+  6     [PAUSA]              El orquestador emite el checklist y espera
+                             evidencia (attestaciones + resultados de
+                             herramientas). status="awaiting_assurance".
+  7     Assurance            Cuando llega la evidencia, la normaliza.
+  8     VerdictEngine        siempre
+  9     Reporter             siempre → status="completed"
+
+  Ramas especiales dentro del flujo:
+  - Si capability_flags.critical_systems_access = true → ThreatMapper añade la
+    rama OC-KC6.6 (procesamiento directo, supervisión máxima).
+  - Si business_domain es de alto riesgo → ContextEscalator activa escalación y
+    marca hotl_required.
+
+VARIANTES FUTURAS (ejemplos, no obligatorias):
+  - "QUICK_SCAN": ejecuta 1–5 y 8–9 con attestación asumida como pendiente
+    (produce solo el mapa de riesgos y el checklist, sin veredicto final).
+  - "REASSESS": reejecuta desde M6 reutilizando el análisis previo (M1–M5) para
+    revalidar tras nueva evidencia.
+
+
+SECCIÓN 6 — MÓDULOS DEL PLANO DETERMINISTA
+────────────────────────────────────────────────────────────────────────────────
+
+Para cada módulo se indica: propósito, ENTRADA (qué lee del contexto y del KB),
+SALIDA (qué escribe en el contexto) y correlación.
+
+─────────────────────────────────────────────
+M1 — INTAKE & VALIDATION
+─────────────────────────────────────────────
+Propósito: recibir y validar los 3 inputs antes de gastar análisis.
+Entrada:
+  - contexto: inputs.capability_flags, inputs.business_context, inputs.aibom
+  - (M1 no lee el KB; la cobertura de flags wizard vs KB se valida al ARRANQUE
+     en el KB Service / selfcheck — ver Sección 8 — no es lectura por-request)
+Lógica:
+  - Verifica presencia de los 3 campos required de business_context.
+  - Validación cruzada: architecture_id ARCH-CENTRAL/SWARM ⇒ wizard debe tener
+    multi_agent_architecture=true (si no → warning).
+  - Define el rol del aibom en v1 (informativo; bindings de CTRL-SC-01 y
+    sensitiveData como evidencia/recomendación).
+Salida:
+  - contexto.status = "analyzing" | "error"
+  - contexto.analysis.warnings[] (advertencias no bloqueantes)
+Correlación: si status="error", el orquestador aborta. Si no, pasa a M2.
+
+─────────────────────────────────────────────
+M2 — THREATMAPPER  (capability_flags → T-IDs)
+─────────────────────────────────────────────
+Propósito: traducir capacidades activas a amenazas concretas.
+Entrada:
+  - contexto: inputs.capability_flags
+  - KB: capability_taxonomy.steps[].capability_flags y .activated_threats;
+        operational_capabilities.OC-KC6.6 (rama critical_systems_access)
+Lógica:
+  - Para cada flag=true, encuentra los STEPs que lo contienen y acumula sus
+    activated_threats (Set, sin duplicados).
+  - Rama especial: critical_systems_access → OC-KC6.6 (core_threats + controls).
+  - NO usa activated_risks (es caché). NO deriva amenazas de la arquitectura.
+Salida:
+  - contexto.analysis.active_steps[], active_threats[] (+ source_map)
+Correlación: alimenta a M3.
+
+─────────────────────────────────────────────
+M3 — RISKMAPPER  (T-IDs → ASI, vía Appendix A)
+─────────────────────────────────────────────
+Propósito: elevar amenazas a los riesgos ASI del Top 10.
+Entrada:
+  - contexto: analysis.active_threats
+  - KB: threat_catalog[].maps_to_asi (réplica oficial de Appendix A)
+Lógica:
+  - Para cada T-ID activo, acumula sus maps_to_asi (Set).
+  - Caso T9: maps_to_asi=[] → no aporta ASI (fiel a OWASP).
+  - (Opcional) verificación cruzada contra cross_mapping.
+Salida:
+  - contexto.analysis.active_asi[] (+ trace T-ID → ASI)
+Correlación: alimenta a M4 y M5.
+
+─────────────────────────────────────────────
+M4 — CONTEXTESCALATOR  (contexto de negocio)
+─────────────────────────────────────────────
+Propósito: aplicar el contexto operativo sobre el análisis.
+Entrada:
+  - contexto: inputs.business_context, analysis.active_asi
+  - KB: verdict_framework.high_risk_business_domains; architecture_types
+Lógica:
+  - Si business_domain ∈ high_risk_business_domains → escalación: exige
+    CTRL-DEP-05, marca hotl_required = true.
+  - Arquitectura → SOLO recomendaciones: recoge security_practices y
+    priority_control_domains (+ baseline ARCH-CROSS). NO añade amenazas/ASI.
+  - lifecycle_phases se guarda para el filtro de M5.
+Salida:
+  - contexto.analysis.high_risk_domain, hotl_required, architecture_recos,
+    escalations[]
+Correlación: alimenta a M5.
+
+─────────────────────────────────────────────
+M5 — CONTROLRESOLVER  (dos sub-paths)
+─────────────────────────────────────────────
+Propósito: determinar qué controles son obligatorios y cuáles recomendados.
+Entrada:
+  - contexto: analysis.active_asi, active_threats, inputs.business_context.
+              lifecycle_phases, analysis.high_risk_domain
+  - KB: verdict_framework.critical_controls_by_risk; controls_catalog
+Lógica:
+  - Sub-path A (veredicto): por cada ASI activo → critical_controls_by_risk →
+    conjunto de CTRL-IDs críticos. Añade CTRL-DEP-05 si high_risk_domain.
+    Enriquece con metadata del control (nombre, descripción).
+  - Sub-path B (recomendaciones): por cada T-ID activo → controls_catalog
+    (mitigates_threats) → filtra por lifecycle_phases → lista completa.
+Salida:
+  - contexto.controls.critical_required[] (= base del checklist)
+  - contexto.controls.recommended[]
+Correlación: dispara la PAUSA de aseguramiento (paso 6 del playbook).
+
+─────────────────────────────────────────────
+M7 — VERDICTENGINE  (capa de decisión)
+─────────────────────────────────────────────
+Propósito: calcular el veredicto. Es la ÚNICA capa con criterio propio del
+sistema (OWASP no define aptitud para producción), declarada como tal.
+Entrada:
+  - contexto: controls.critical_required, assurance.attestations,
+              assurance.red_teaming_done, assurance.incident_response_plan,
+              analysis.high_risk_domain
+  - KB: verdict_framework.verdicts, .high_severity_risks
+Lógica (orden: NOT_APT → APT → APT_WITH_RESTRICTIONS):
+  - NOT_APT si falta un crítico de un ASI en high_severity_risks
+    (ASI01,02,03,05,06), o sin logging inmutable (CTRL-MON-01), o sin IR plan,
+    o supply chain sin verificar con acceso a producción.
+  - APT si todos los críticos implementados + red teaming hecho para ASI de alta
+    severidad activos + IR plan + CTRL-MON-01 + (CTRL-DEP-05 si high_risk_domain).
+  - APT_WITH_RESTRICTIONS en el caso intermedio.
+Salida:
+  - contexto.verdict.result, rationale, trace
+Correlación: alimenta al Reporter.
+
+─────────────────────────────────────────────
+R — REPORTER
+─────────────────────────────────────────────
+Propósito: ensamblar el reporte final legible + máquina.
+Entrada: todo el Assessment Context.
+Salida: documento de reporte (verdict, riesgos activos con trazabilidad,
+  controles required/implemented/missing, recomendaciones filtradas, métodos de
+  aseguramiento requeridos con herramientas, warnings, rationale).
+Correlación: cierra el flujo; status="completed".
+
+
+SECCIÓN 7 — PLANO DE ASEGURAMIENTO
+────────────────────────────────────────────────────────────────────────────────
+
+─────────────────────────────────────────────
+M6 — ASSURANCE & ATTESTATION  (el único no determinista)
+─────────────────────────────────────────────
+Propósito: recoger la EVIDENCIA de que los controles críticos funcionan. Es el
+único punto de confianza externa del sistema.
+
+Sub-componentes:
+
+  6.a  GENERADOR DE CHECKLIST
+       Entrada: contexto.controls.critical_required + KB (metadata de control,
+                categoria_validacion del CSV de controles).
+       Salida: contexto.assurance.checklist[] — un item por control con:
+                control_id, por qué se exige (ASI que lo activan),
+                categoria_validacion (herramienta_tecnica / revision_config /
+                proceso_humano), método ASSUR sugerido, y campos a completar
+                (status + evidence).
+
+  6.b  ATTESTATION INTAKE (HITL)
+       Recibe del evaluador humano: status (implemented/partial/not_implemented)
+       + evidencia por control. También: red_teaming_done, incident_response_plan.
+
+  6.c  CONNECTOR MANAGER  (integraciones estilo SOAR)
+       Ejecuta herramientas externas y normaliza su salida a "evidencia".
+       Interfaz uniforme de cada conector:  run(target, config) → evidence{}.
+       El manager selecciona conectores según los ASSUR-ID relevantes para los
+       ASI activos (assurance_methods.covers_risks).
+
+Salida del módulo:
+  contexto.assurance.attestations{}, tool_results[], red_teaming_done,
+  incident_response_plan, assurance_methods_used[]
+Correlación: al completarse, el orquestador reanuda el caso y ejecuta M7.
+
+─────────────────────────────────────────────
+CATÁLOGO DE CONECTORES (v1 objetivo)
+─────────────────────────────────────────────
+Cada uno implementa la misma interfaz run(target, config) → evidence{}. Mapean a
+la columna herramienta_validacion del CSV de controles:
+
+  Conector            Cubre (ejemplos)                        ASSUR
+  ──────────────────  ──────────────────────────────────────  ────────
+  promptfoo           prompt injection, output moderation, PII ASSUR-01/02
+  AgentDojo           tool injection, HITL bypass, memory leak ASSUR-01
+  AgentFence          system prompt leak, allow/deny bypass    ASSUR-01
+  AgentPoison         memory poisoning / persistencia          ASSUR-01
+  OWASP ZAP           SQLi, XSS, SSRF, auth, API gateway       ASSUR-01/05
+  Trivy / pip-audit   dependencias, contenedores (supply chain)ASSUR-05
+  Semgrep / Bandit    static analysis de código generado       ASSUR-05
+  testssl.sh          TLS/mTLS inter-agente                    ASSUR-04
+  Langfuse/LangSmith  baseline de comportamiento, monitoreo    ASSUR-04
+  (manual/tabletop)   kill switch, IR plan, replay, políticas  proceso_humano
+
+Añadir un conector NO toca el core: se registra en el Connector Manager.
+
+
+SECCIÓN 8 — SERVICIOS TRANSVERSALES
+────────────────────────────────────────────────────────────────────────────────
+
+KNOWLEDGE BASE SERVICE
+  - Provee acceso de SOLO LECTURA al owasp_asi_knowledge_base.json y a los
+    schemas de wizard y business_context.
+  - Versionado: cada evaluación registra kb_version para reproducibilidad.
+  - Ejecuta al arranque la validación de cobertura de flags (wizard vs KB) y la
+    verificación de que activated_risks = derivación de Appendix A (self-check).
+  - Todos los módulos deterministas dependen de este servicio; ninguno hardcodea
+    semántica OWASP.
+
+ASSESSMENT STORE (persistencia)
+  - Guarda cada Assessment Context y su historial de transiciones (auditoría).
+  - Permite reanudar casos en "awaiting_assurance" y reejecutar variantes.
+
+REPORT GENERATOR
+  - Toma el contexto final y produce salida legible (informe) y máquina (JSON).
+
+
+SECCIÓN 9 — FLUJO COMPLETO END-TO-END
+────────────────────────────────────────────────────────────────────────────────
+
+  [Evaluador] completa wizard + business_context + (opcional) aibom
+        │
+        ▼
+  CAPA 1 Intake crea el Assessment Context  ──────────────► ASSESSMENT STORE
+        │
+        ▼
+  ORQUESTADOR carga playbook "FULL_VALIDATION"
+        │
+        ├─(1)─► M1 Intake&Validation ─── error? ──► ABORTAR + Reporter(error)
+        │            │ ok/warnings
+        ├─(2)─► M2 ThreatMapper ──────────► active_threats[]   (KB: taxonomy)
+        │            │                        └─ rama critical_systems_access→OC-KC6.6
+        ├─(3)─► M3 RiskMapper ────────────► active_asi[]       (KB: maps_to_asi/App.A)
+        │            │
+        ├─(4)─► M4 ContextEscalator ──────► high_risk_domain, hotl, recos (KB)
+        │            │
+        ├─(5)─► M5 ControlResolver ───────► critical_required[] + recommended[]
+        │            │                        (KB: critical_controls_by_risk, catalog)
+        │            ▼
+        ├─(6)  [PAUSA]  status="awaiting_assurance"
+        │            │   Orquestador emite checklist (6.a)
+        │            │        ├── Evaluador atestigua controles (6.b HITL)
+        │            │        └── Connector Manager corre herramientas (6.c)
+        │            │             promptfoo · ZAP · Trivy · … → evidencia
+        │            ▼   (llega la evidencia)
+        ├─(7)─► M6 Assurance ─────────────► attestations, tool_results, flags
+        │            │
+        ├─(8)─► M7 VerdictEngine ─────────► verdict (KB: verdict_framework)
+        │            │
+        └─(9)─► R  Reporter ──────────────► REPORTE FINAL  ──► ASSESSMENT STORE
+                     │                        status="completed"
+                     ▼
+              [Evaluador recibe] veredicto + trazabilidad + controles faltantes
+                                 + recomendaciones + herramientas de aseguramiento
+
+
+SECCIÓN 10 — CORRELACIÓN RESUMIDA (quién alimenta a quién)
+────────────────────────────────────────────────────────────────────────────────
+
+  inputs ─► M1 ─► (valida) ─► M2 ─► active_threats ─► M3 ─► active_asi ─┐
+                                                                        │
+     business_context ──────────────────────► M4 ◄──── active_asi ──────┘
+                                               │
+                          active_asi + T-IDs + lifecycle ─► M5 ─► controls
+                                                             │
+                                          critical_required ─► M6 (HITL+conectores)
+                                                             │
+                                    attestations + evidencia ─► M7 ─► verdict
+                                                                       │
+                                        todo el contexto ─────────────► R ─► reporte
+
+  Regla de oro: el análisis (M1–M5) NO depende de herramientas externas y puede
+  correr y cachearse por completo antes de que exista cualquier evidencia. El
+  veredicto (M7) solo puede calcularse después de M6. Esta es la razón de la
+  pausa en el paso 6 del playbook.
+
+
+SECCIÓN 11 — CÓMO ESCALA (extensión sin tocar el núcleo)
+────────────────────────────────────────────────────────────────────────────────
+
+  - Nuevos flags / controles / mapeos OWASP → editar el KB (dato versionado).
+  - Nueva herramienta de pentesting/monitoreo → registrar un conector nuevo.
+  - Nuevo umbral o tipo de veredicto → editar verdict_framework (capa de decisión).
+  - v2 agent_scope (restricciones por capability) → insertar un módulo de
+    refinamiento entre M4 y M5, respetando el contrato del Assessment Context.
+  - Escalar carga → los módulos deterministas son stateless: hoy pueden ser
+    llamadas en-proceso; mañana, workers en cola o microservicios, sin cambiar
+    contratos ni el orquestador.
+  - Nuevos playbooks (quick scan, reassess) → nuevos datos de playbook, mismo
+    orquestador.
+
+
+SECCIÓN 12 — RESUMEN DE COMPONENTES
+────────────────────────────────────────────────────────────────────────────────
+
+  COMPONENTE              TIPO             DETERMINISTA   RESPONSABILIDAD
+  ──────────────────────  ───────────────  ────────────  ────────────────────────
+  Intake (Capa 1)         Interfaz         sí            recibe inputs, crea caso
+  Orquestador             Coordinación     sí            ejecuta el playbook
+  Playbook                Dato             n/a           define la secuencia
+  M1 Intake&Validation    Módulo           sí            valida inputs
+  M2 ThreatMapper         Módulo           sí            flags → T-IDs
+  M3 RiskMapper           Módulo           sí            T-IDs → ASI (Appendix A)
+  M4 ContextEscalator     Módulo           sí            dominio/arquitectura/lifecycle
+  M5 ControlResolver      Módulo           sí            controles crítico+recom.
+  M6 Assurance            Módulo           NO            evidencia (HITL+conectores)
+  M7 VerdictEngine        Módulo           sí            veredicto (capa de decisión)
+  R  Reporter             Módulo           sí            reporte final
+  Connector Manager       Subsistema       NO            corre herramientas externas
+  Conectores              Integraciones    NO            promptfoo, ZAP, Trivy, …
+  KB Service              Servicio         sí            provee semántica OWASP
+  Assessment Store        Servicio         sí            persistencia + auditoría
+  Report Generator        Servicio         sí            salida legible/máquina
+
+================================================================================
+FIN DEL DOCUMENTO
+================================================================================

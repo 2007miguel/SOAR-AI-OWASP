@@ -1,0 +1,787 @@
+================================================================================
+  GUÍA DEL JSON: owasp_asi_knowledge_base.json
+  Base de conocimiento para el sistema de validación de agentes de IA
+================================================================================
+
+
+-1. DEFINICIÓN DEL SISTEMA Y ALCANCE DE V1
+--------------------------------------------------------------------------------
+
+DEFINICIÓN
+
+El sistema es un framework de cumplimiento prescriptivo alineado a OWASP para
+agentes de IA. Dado un agente con ciertas capacidades declaradas, el sistema
+determina qué controles de seguridad OWASP son obligatorios para que ese agente
+sea considerado apto para producción, y verifica si esos controles están
+implementados.
+
+No es un escáner dinámico, no detecta vulnerabilidades en tiempo de ejecución,
+y no analiza el código del agente directamente. Es un sistema de evaluación
+estructurada basado en capacidades declaradas y controles verificados.
+
+QUÉ HACE V1
+
+  1. Recibe tres inputs: capability_flags (wizard), contexto de negocio
+     (business_context) y metadata del componente (aibom CycloneDX).
+
+  2. Mapea las capacidades activas a amenazas (T-IDs) y riesgos (ASI-IDs)
+     según la taxonomía OWASP.
+
+  3. Determina qué controles son obligatorios (críticos para el veredicto)
+     y cuáles son recomendados, basándose en los ASI-IDs y T-IDs activos.
+
+  4. Genera un checklist de attestación para el evaluador y selecciona los
+     métodos de aseguramiento (ASSUR-01 a ASSUR-05) relevantes.
+
+  5. Produce un veredicto: APT / APT_WITH_RESTRICTIONS / NOT_APT.
+
+SUPUESTO DE PEOR CASO
+
+V1 trata cada capability_flag activo en su nivel máximo de riesgo. Si el agente
+declara tool_use=true, el sistema aplica todos los controles de tool execution
+completos, independientemente de si en la práctica el agente solo puede llamar
+una API interna de solo lectura. Esto hace al sistema conservador por diseño:
+puede requerir controles que son excesivos para implementaciones restringidas,
+pero garantiza que ningún riesgo OWASP quede sin cobertura declarada.
+
+QUÉ NO HACE V1 (PENDIENTE PARA V2)
+
+  agent_scope: V1 no modela restricciones operativas dentro de cada
+  capability. No puede saber que tool_use=true está limitado a un conjunto
+  específico de herramientas de solo lectura, o que web_browsing=true está
+  restringido a una whitelist de 3 dominios. Esa granularidad cambiaría el
+  perfil de riesgo real del agente y reduciría el conjunto de controles
+  requeridos para implementaciones más restringidas.
+
+  V2 añadiría agent_scope.json como cuarto input: un JSON por capability
+  activa que define qué herramientas, dominios, operaciones o temas están
+  permitidos o bloqueados. Con esa información, el pipeline podría ajustar
+  el nivel de riesgo por capacidad en lugar de asumir siempre el peor caso.
+
+  Ejemplo:
+    V1: tool_use=true → aplica TODOS los controles de CTRL-TOOL
+    V2: tool_use=true + scope{allowed_tools:["read_db"]} →
+        aplica solo controles de CTRL-TOOL relevantes para DB read-only,
+        excluye controles de code execution, file system, web browsing
+
+CÓMO LEER ESTA GUÍA
+
+Esta guía describe el knowledge base que alimenta el sistema v1. La lógica
+de pipeline que lo consume está documentada en pipeline_implementacion_GUIA.txt.
+Los controles disponibles están en controles_paso5_validacion.csv y
+controles.txt.
+
+La sección 0 describe el contexto del sistema desde la perspectiva del
+knowledge base. La sección 6 describe el flujo completo del pipeline.
+La sección 8 lista lo que el sistema debe implementar en código (no en el JSON).
+
+
+0. CONTEXTO DEL SISTEMA
+--------------------------------------------------------------------------------
+El objetivo es desarrollar un sistema de validación y aseguramiento end-to-end
+para agentes de IA. Dado un agente con ciertas capacidades (un chatbot, un
+agente transaccional, un agente con herramientas, uno multi-agente o uno
+autónomo), el sistema debe determinar si ese agente es apto para operar en
+producción desde una perspectiva de seguridad.
+
+El sistema produce un veredicto con tres valores posibles:
+  - APT: apto para producción, todos los controles críticos cubiertos
+  - APT_WITH_RESTRICTIONS: apto con condiciones o controles pendientes menores
+  - NOT_APT: no apto, hay riesgos críticos sin mitigar
+
+El sistema es agnóstico al negocio y al tipo de agente. Funciona para cualquier
+contexto siempre que el agente sea registrado correctamente al inicio.
+
+Este JSON es la base de conocimiento que alimenta ese sistema. No es el sistema
+en sí: es el conjunto estructurado de reglas, amenazas, controles y criterios
+derivados de los estándares OWASP para agentes de IA, que el código del sistema
+lee y aplica para producir el análisis y el veredicto.
+
+
+1. PROPÓSITO DEL JSON
+--------------------------------------------------------------------------------
+Este archivo es la capa de conocimiento (knowledge base) del sistema de
+validación. No ejecuta nada por sí solo: es la fuente de datos que el sistema
+lee para tomar decisiones sobre si un agente es apto para producción.
+
+Todo el conocimiento proviene de tres documentos OWASP:
+  - OWASP Top 10 for Agentic AI (ASI01–ASI10)
+  - Agentic AI Threats and Mitigations v1.1 (T1–T17)
+  - Securing Agentic Applications Guide 1.0 (arquitecturas, ciclo de vida,
+    capacidades operacionales)
+
+La terminología del JSON replica exactamente la de los documentos fuente.
+Esto es intencional: permite auditar la veracidad de cada elemento.
+
+
+2. ESTRUCTURA GENERAL (15 SECCIONES)
+--------------------------------------------------------------------------------
+Las 15 secciones de nivel superior se agrupan en 5 capas funcionales:
+
+  CAPA DE ENTRADA (registro del agente)
+  ├── registration_questionnaire   Preguntas que producen capability_flags
+  └── agent_type_profiles          Perfiles predefinidos de tipo de agente
+
+  CAPA DE TAXONOMÍA (análisis de superficie de ataque)
+  ├── capability_taxonomy          6 STEPs que activan amenazas (T-IDs)
+  ├── key_components               KC1–KC6: bloques constructivos del agente
+  └── operational_capabilities     OC-KC6.1–KC6.6: capacidades con controles
+
+  CAPA DE CONOCIMIENTO (catálogos de referencia)
+  ├── risk_catalog                 ASI01–ASI10: riesgos de alto nivel
+  ├── threat_catalog               T1–T17: amenazas granulares
+  ├── cross_mapping                Matriz Appendix A: ASI ↔ T-IDs
+  ├── architecture_types           ARCH-SINGLE/CENTRAL/SWARM/CROSS
+  └── lifecycle_security           PHASE-DESIGN/BUILD/RUNTIME
+
+  CAPA DE CONTROLES (recomendación)
+  ├── controls_catalog             8 dominios CTRL-* con controles específicos
+  ├── assurance_methods            ASSUR-01–05: métodos de prueba y validación
+  └── playbooks                    PB-01–06: guías operativas paso a paso
+
+  CAPA DE DECISIÓN (veredicto)
+  └── verdict_framework            APT / APT_WITH_RESTRICTIONS / NOT_APT
+
+
+3. POR QUÉ ESTA ESTRUCTURA
+--------------------------------------------------------------------------------
+El diseño sigue un modelo de pipeline, no de matriz. Esto significa que los
+datos no están en una tabla plana sino en nodos conectados mediante
+identificadores compartidos (strings).
+
+Ventaja principal: cada sección es una fuente de verdad independiente.
+Los identificadores (T1, ASI01, CTRL-AUTH-01, PHASE-DESIGN, etc.) son los
+"cables" que conectan secciones. El sistema los usa para navegar el grafo.
+
+No hay claves foráneas al estilo de base de datos relacional. Todas las
+conexiones son strings que el sistema debe cruzar en código.
+
+
+4. LOS IDENTIFICADORES COMPARTIDOS (CÓMO SE CONECTA TODO)
+--------------------------------------------------------------------------------
+Estos son los 6 tipos de identificadores que conectan las secciones entre sí.
+Entender estos vínculos es entender cómo funciona el JSON.
+
+  4.1 capability_flags
+  -------
+  Strings booleanos que describen qué puede hacer el agente.
+  Ejemplos: "api_access", "code_execution", "multi_agent_architecture"
+
+  Aparecen en:
+    - registration_questionnaire → cada pregunta activa uno o más flags
+    - capability_taxonomy.steps[].capability_flags → qué flags activan el STEP
+    - operational_capabilities[].capability_flag_refs → qué flags activan el OC
+    - key_components[].capability_flag_refs → qué flags componen el KC
+
+  Rol en el sistema: son el input primario. Todo el análisis parte de ellos.
+
+  4.2 T-IDs (T1–T17)
+  -------
+  Identificadores de amenazas granulares del documento Threats and Mitigations.
+
+  Aparecen en:
+    - threat_catalog[].threat_id → definición canónica
+    - threat_catalog[].maps_to_asi[] → a qué ASIs mapea cada T-ID
+    - cross_mapping → matriz ASI ↔ T-IDs (fuente de verdad Appendix A)
+    - capability_taxonomy.steps[].threats_detail[].threat_id → T-IDs activados
+    - controls_catalog[].controls[].mitigates_threats[] → qué T-IDs mitiga
+    - playbooks[].mitigates_threat_ids[] → qué T-IDs cubre el playbook
+    - key_components[].associated_threats[] → T-IDs por componente arquitectural
+    - operational_capabilities[].core_threats[] → T-IDs por capacidad operacional
+    - lifecycle_security[].practices[].mitigates_threats[] → T-IDs por práctica
+
+  Rol en el sistema: son el nodo central del pipeline. Todo pasa por T-IDs.
+
+  4.3 ASI-IDs (ASI01–ASI10)
+  -------
+  Identificadores de riesgos de alto nivel del OWASP Top 10 for Agentic AI.
+
+  Aparecen en:
+    - risk_catalog[].risk_id → definición canónica
+    - threat_catalog[].maps_to_asi[] → qué ASIs activa cada amenaza
+    - cross_mapping → fuente de verdad de la relación ASI ↔ T-IDs
+    - assurance_methods[].covers_risks[] → qué ASIs cubre cada método
+    - verdict_framework.critical_controls_by_risk → ASI → CTRL-IDs obligatorios
+
+  Rol en el sistema: son el nivel de riesgo. Se usan para seleccionar controles
+  críticos y para determinar el veredicto.
+
+  Relación con T-IDs — es M:N, no 1:N:
+  Un ASI puede agrupar múltiples T-IDs (ej. ASI01 → T1, T6) y un mismo T-ID
+  puede mapear a múltiples ASIs (ej. T6 → ASI01, ASI06). Esta cardinalidad
+  M:N es importante: activar un T-ID puede inflar varios ASIs simultáneamente,
+  y un ASI nunca debe asumirse como "un T-ID específico". El sistema debe
+  acumular el conjunto completo de ASIs resultantes antes de consultar
+  critical_controls_by_risk, no procesarlos uno a uno de forma aislada.
+
+  4.4 CTRL-IDs (CTRL-AUTH-01, CTRL-TOOL-02, etc.)
+  -------
+  Identificadores de controles específicos dentro de cada dominio.
+
+  Aparecen en:
+    - controls_catalog[].controls[].control_id → definición canónica
+    - verdict_framework.critical_controls_by_risk → ASI-ID → [CTRL-IDs]
+
+  Rol en el sistema: son lo que el evaluador verifica. Para cada ASI activo,
+  el sistema consulta qué CTRL-IDs son obligatorios y verifica su cobertura.
+
+  4.5 PHASE-IDs (design, build, runtime)
+  -------
+  Strings de fase del ciclo de vida.
+
+  Aparecen en:
+    - controls_catalog[].applicable_lifecycle_phases[] → en qué fase aplica
+    - lifecycle_security[].phases[].phase_id → definición canónica
+
+  Rol en el sistema: permiten filtrar controles según en qué etapa está el
+  agente (¿está en diseño? ¿ya está en producción?).
+
+  4.6 ARCH-IDs (ARCH-SINGLE, ARCH-CENTRAL, ARCH-SWARM, ARCH-CROSS)
+  -------
+  Identificadores de patrones de arquitectura.
+
+  Aparecen en:
+    - architecture_types[].arch_id → definición canónica con security_practices
+    - key_components.architecture_kc_composition[].arch_ref → composición de KCs
+
+  Rol en el sistema: permiten filtrar prácticas de seguridad según el patrón
+  arquitectural declarado por el agente en el registro.
+
+
+5. SECCIÓN POR SECCIÓN: VARIABLES CLAVE Y APORTE AL SISTEMA
+--------------------------------------------------------------------------------
+
+  5.1 registration_questionnaire
+  ───────────────────────────────
+  Qué es: el formulario de entrada. Define las preguntas que el evaluador
+  responde sobre el agente.
+
+  Variables importantes:
+    questions[].question_id     ID de la pregunta (Q-01, Q-02, ...)
+    questions[].capability_flag Flag que activa si la respuesta es "sí"
+    questions[].maps_to_step    STEP de capability_taxonomy que activa
+
+  Aporte al sistema (histórico):
+  Fue el punto de entrada original. Hoy esa función la cumple el wizard externo.
+  El mecanismo conceptual sigue siendo el mismo: cada respuesta afirmativa
+  activa un capability_flag, que a su vez activa STEPs, que a su vez activan
+  T-IDs. Sin registro (ahora vía wizard) no hay pipeline.
+
+  IMPORTANTE — DEPRECADO. Superado por el wizard externo:
+  registration_questionnaire está marcado como deprecated en el JSON. La capa
+  de entrada autoritativa es ahora el wizard externo
+  (wizard/agent_validation_wizard.json), que cubre los 46 capability_flags con
+  validación de cobertura automática. El registration_questionnaire embebido se
+  conserva solo por trazabilidad histórica y NO debe usarse: está incompleto
+  (no cubre goal_setting ni self_evaluation) y contiene un mapeo obsoleto
+  (agent_to_agent_trust bajo STEP-4, cuando ese flag pertenece a STEP-6).
+
+  Lo que SÍ está fijo y no debe cambiar son los capability_flags: son los
+  identificadores que conectan la capa de entrada con el resto del pipeline
+  (capability_taxonomy, operational_capabilities, key_components). El wizard ya
+  respeta esos flags de forma consistente.
+
+  Cómo debe desarrollarse la capa de entrada real:
+  - Definir el flujo de registro: ¿quién lo completa? (el equipo de seguridad,
+    el desarrollador del agente, un proceso automatizado vía API)
+  - Decidir el formato de interacción: formulario web, cuestionario en CLI,
+    llamada a API con payload JSON, o integración con un pipeline CI/CD
+  - Las preguntas deben cubrir exhaustivamente todos los capability_flags que
+    existen en capability_taxonomy y operational_capabilities. Si un flag no
+    tiene pregunta asociada, nunca se activará y el riesgo quedará invisible.
+  - Considerar validación: algunos flags son mutuamente excluyentes (ej. un
+    agente no puede ser ARCH-SINGLE y ARCH-SWARM al mismo tiempo). Esa lógica
+    vive en el formulario, no en el JSON.
+  - El output de esta capa es siempre el mismo: un objeto con los
+    capability_flags activos. Ese objeto es el único input que necesita el
+    pipeline para arrancar.
+
+  ─────────────────────────────────────────────────────────────────────────────
+
+  5.2 agent_type_profiles
+  ────────────────────────
+  Qué es: perfiles predefinidos para tipos comunes de agentes (chatbot,
+  agente transaccional, agente autónomo, etc.).
+
+  Variables importantes:
+    profile_id                  ID del perfil
+    default_capability_flags[]  Flags que activa este tipo de agente por defecto
+
+  Aporte al sistema:
+  Permite pre-poblar el formulario de registro. En lugar de responder todas
+  las preguntas manualmente, el evaluador puede elegir un perfil y el sistema
+  activa los flags correspondientes. El evaluador puede ajustar después.
+
+  IMPORTANTE — Estado actual y capa a desarrollar:
+  Al igual que registration_questionnaire, los perfiles actuales y sus flags
+  por defecto son ejemplos iniciales. Son funcionales como punto de partida
+  pero deben refinarse con casos reales de agentes del negocio.
+
+  Cómo debe desarrollarse:
+  - Definir los arquetipos de agente relevantes para el contexto de uso
+    (pueden diferir de los ejemplos actuales según el dominio del negocio)
+  - Para cada perfil, mapear con precisión qué capability_flags son típicos
+    de ese tipo de agente. Estos deben derivarse del comportamiento real del
+    agente, no de suposiciones.
+  - Los perfiles son atajos, no restricciones: el evaluador siempre debe
+    poder sobrescribir los flags pre-poblados durante el registro.
+
+  ─────────────────────────────────────────────────────────────────────────────
+
+  5.3 capability_taxonomy
+  ────────────────────────
+  Qué es: el motor de activación de amenazas. Contiene 6 STEPs (preguntas
+  del Taxonomy Navigator de los documentos OWASP).
+
+  Variables importantes:
+    steps[].step_id                        STEP-1 a STEP-6
+    steps[].capability_flags[]             Flags que activan este STEP
+    steps[].threats_detail[].threat_id     T-ID activado por el STEP
+    steps[].threats_detail[].scenario      Descripción del escenario de riesgo
+    steps[].threats_detail[].conditions[]  Condiciones específicas de activación
+
+  Aporte al sistema:
+  Es el componente más importante del análisis. Dado un conjunto de
+  capability_flags activos, el sistema identifica qué STEPs se activan y
+  qué T-IDs se derivan (campo activated_threats). Este es el paso que
+  transforma "el agente puede ejecutar código" en "T11 (Unexpected RCE) está
+  activo".
+
+  IMPORTANTE — activated_risks es un caché derivado, NO una fuente:
+  El Taxonomy Navigator oficial NO mapea STEPs a ASI (solo Step→amenazas). El
+  único mapeo oficial amenaza→riesgo es la matriz Appendix A del OWASP Top 10,
+  replicada en threat_catalog.maps_to_asi y en cross_mapping. Por eso el campo
+  activated_risks de cada STEP se define como la unión de maps_to_asi sobre sus
+  activated_threats, y así está regenerado en el JSON. El pipeline debe calcular
+  los ASI por esa vía (activated_threats → maps_to_asi), sin asumir ningún
+  atajo STEP→ASI. No existe camino directo flag→ASI ni STEP→ASI.
+
+  Nota T9: STEP-4 activa únicamente T9 (Identity Spoofing), que tiene
+  maps_to_asi: [] porque T9 no aparece en Appendix A. Por eso el
+  activated_risks de STEP-4 es [] (vacío intencional). T9 se trata como amenaza
+  activa y recibe controles vía controls_catalog, pero no aporta ASI ni
+  controles críticos al veredicto. No se le asigna ASI por afinidad para no
+  introducir criterio propio fuera de OWASP.
+
+  ─────────────────────────────────────────────────────────────────────────────
+
+  5.4 key_components
+  ───────────────────
+  Qué es: los 6 bloques constructivos de todo agente (KC1–KC6), con análisis
+  de superficie de ataque. KC6 tiene 7 sub-componentes operacionales.
+
+  Variables importantes:
+    components[].kc_id                 KC1–KC6
+    components[].sub_components[]      Sub-componentes técnicos (KC1.1, KC4.6…)
+    components[].associated_threats[]  T-IDs expuestos por este componente
+    components[].attack_surface_summary Resumen de la superficie de ataque
+    components[].capability_flag_refs[] Flags que activan este KC
+
+  Aporte al sistema:
+  Capa complementaria de análisis. Permite al sistema responder "¿qué partes
+  del agente están expuestas?" además de "¿qué amenazas están activas?".
+  Útil para reportes de superficie de ataque y para explicar al evaluador
+  por qué ciertas amenazas se activaron.
+
+  architecture_kc_composition muestra cómo los KCs se combinan en cada
+  patrón arquitectural (Sequential → KC1.1 + KC2.1 + KC3.3…).
+
+  ─────────────────────────────────────────────────────────────────────────────
+
+  5.5 operational_capabilities
+  ─────────────────────────────
+  Qué es: detalle de seguridad por capacidad operacional (API access, code
+  execution, database, web browsing, PC/OS, critical systems). Mapea
+  directamente a KC6.1–KC6.6.
+
+  Variables importantes:
+    capabilities[].capability_id        OC-KC6.1 a OC-KC6.6
+    capabilities[].capability_flag_refs[] Flags del registro que activan este OC
+    capabilities[].core_threats[]       T-IDs que activa esta capacidad
+    capabilities[].controls[].name      Nombre del control específico
+    capabilities[].controls[].actions[] Acciones concretas de implementación
+
+  Aporte al sistema:
+  Es el puente más directo entre el registro y los controles accionables.
+  Cuando el agente declara api_access=true, el sistema busca OC-KC6.1 y
+  obtiene directamente los controles con acciones de implementación
+  específicas (OAuth scopes, allow/deny lists, API templates).
+  A diferencia de controls_catalog que es genérico por dominio, aquí los
+  controles son específicos por tipo de capacidad.
+
+  Importante: OC-KC6.6 (Critical Systems) tiene un campo special_note que
+  el sistema debe leer para escalar el nivel de supervisión requerido.
+
+  ─────────────────────────────────────────────────────────────────────────────
+
+  5.6 risk_catalog
+  ─────────────────
+  Qué es: los 10 riesgos de alto nivel del OWASP Top 10 for Agentic AI.
+
+  Variables importantes:
+    risks[].risk_id          ASI01–ASI10
+    risks[].title            Nombre del riesgo
+    risks[].threats_mapping  T-IDs que componen el riesgo (según Appendix A)
+    risks[].severity_drivers capability_flags que elevan la severidad del riesgo
+
+  NOTA: risk_catalog NO tiene un campo `severity`. La noción de "alta
+  severidad" para el veredicto vive en la capa de decisión, en
+  verdict_framework.high_severity_risks (lista explícita de ASI cuyo control
+  crítico faltante produce NOT_APT). El pipeline debe leer esa lista, no un
+  campo severity en risk_catalog.
+
+  Aporte al sistema:
+  Capa de referencia para el veredicto. El sistema usa los ASI-IDs activos
+  (derivados desde T-IDs vía maps_to_asi / Appendix A) para consultar qué
+  controles críticos se requieren en verdict_framework.
+
+  ─────────────────────────────────────────────────────────────────────────────
+
+  5.7 threat_catalog
+  ───────────────────
+  Qué es: las 17 amenazas granulares del documento Threats and Mitigations.
+
+  Variables importantes:
+    threats[].threat_id        T1–T17
+    threats[].name             Nombre de la amenaza
+    threats[].description      Descripción detallada
+    threats[].maps_to_asi[]    ASI-IDs a los que mapea (fuente: Appendix A)
+    threats[].mitigation       Descripción de mitigación
+    threats[].maps_to_asi_note Solo en T9: explica por qué maps_to_asi es []
+
+  Aporte al sistema:
+  Es el catálogo de amenazas que el sistema activa. Tiene doble función:
+  1) define las amenazas (qué son, cómo se mitigan)
+  2) es el conector entre T-IDs y ASI-IDs (maps_to_asi)
+
+  Regla especial T9: maps_to_asi es [] — se activa desde STEP-4 pero no
+  mapea a ningún ASI en Appendix A (fiel a OWASP; no se le asigna ASI por
+  afinidad para no introducir criterio propio). El sistema lo activa como
+  amenaza y recomienda sus controles vía controls_catalog (los que tienen T9
+  en mitigates_threats: CTRL-AUTH-*, CTRL-INTERAGENT-01/06, CTRL-DEP-04), sin
+  asociarlo a un ASI y sin que aporte controles críticos al veredicto.
+
+  ─────────────────────────────────────────────────────────────────────────────
+
+  5.8 cross_mapping
+  ──────────────────
+  Qué es: la matriz Appendix A del documento Threats and Mitigations.
+  Es la fuente de verdad canónica de la relación ASI ↔ T-IDs.
+
+  Variables importantes:
+    asi_to_llm_to_threats_to_aivss[].asi_id    ASI-ID
+    asi_to_llm_to_threats_to_aivss[].threats[] T-IDs que mapean a ese ASI
+
+  Aporte al sistema:
+  Permite verificación cruzada. El sistema puede derivar ASIs desde T-IDs
+  usando threat_catalog.maps_to_asi, y puede verificar consistencia usando
+  esta matriz. En caso de discrepancia, cross_mapping es la fuente de verdad.
+
+  ─────────────────────────────────────────────────────────────────────────────
+
+  5.9 architecture_types
+  ───────────────────────
+  Qué es: 4 patrones de arquitectura (ARCH-SINGLE, ARCH-CENTRAL, ARCH-SWARM,
+  ARCH-CROSS) con prácticas de seguridad específicas por dominio.
+
+  Variables importantes:
+    types[].arch_id                       ARCH-SINGLE, etc.
+    types[].security_practices[]          Dominios de prácticas de seguridad
+    types[].security_practices[].domain   Nombre del dominio (ej. "authentication")
+    types[].security_practices[].practices[] Prácticas concretas
+
+  Aporte al sistema:
+  Capa de recomendaciones específicas por arquitectura. El sistema filtra las
+  prácticas del tipo de arquitectura declarado y las agrega al reporte.
+  ARCH-CROSS contiene principios aplicables a cualquier arquitectura y debe
+  incluirse siempre, independientemente del tipo elegido.
+
+  ─────────────────────────────────────────────────────────────────────────────
+
+  5.10 lifecycle_security
+  ────────────────────────
+  Qué es: prácticas de seguridad organizadas por fase del ciclo de vida
+  (diseño, build, runtime). 8+8+6 prácticas respectivamente.
+
+  Variables importantes:
+    phases[].phase_id                          PHASE-DESIGN, PHASE-BUILD, PHASE-RUNTIME
+    phases[].applicable_control_domains[]      CTRL-* dominios relevantes por fase
+    phases[].practices[].practice_id           PHASE-DESIGN-01, etc.
+    phases[].practices[].mitigates_threats[]   T-IDs que mitiga esta práctica
+    phases[].practices[].key_actions[]         Acciones concretas
+
+  Aporte al sistema:
+  Permite contextualizar las recomendaciones temporalmente. Un agente en fase
+  de diseño recibe prácticas de PHASE-DESIGN; uno ya desplegado recibe
+  PHASE-RUNTIME. El sistema puede filtrar applicable_control_domains para
+  cruzar con controls_catalog y obtener qué dominios de control corresponden
+  a cada fase.
+
+  ─────────────────────────────────────────────────────────────────────────────
+
+  5.11 controls_catalog
+  ──────────────────────
+  Qué es: 8 dominios de controles de seguridad con controles específicos.
+
+  Dominios: CTRL-AUTH, CTRL-DATA, CTRL-PROMPT, CTRL-TOOL, CTRL-INTERAGENT,
+            CTRL-SUPPLYCHAIN, CTRL-MONITORING, CTRL-DEPLOYMENT
+
+  Variables importantes:
+    domains[].domain_id                        CTRL-AUTH, etc.
+    domains[].applicable_lifecycle_phases[]    ["design","build","runtime"]
+    domains[].controls[].control_id            CTRL-AUTH-01, etc.
+    domains[].controls[].mitigates_threats[]   T-IDs que mitiga
+    domains[].controls[].description           Descripción del control
+
+  Aporte al sistema:
+  Es la base de las recomendaciones. El sistema llega aquí con una lista de
+  T-IDs activos, busca controles que los mitiguen, y filtra por fase.
+  verdict_framework.critical_controls_by_risk referencia control_ids de esta
+  sección para determinar si el agente es apto.
+
+  Importante: CTRL-SUPPLYCHAIN es el dominio con menos controles (4). Para
+  agentes con supply chain compleja considerar complementar con Section 6.
+
+  ─────────────────────────────────────────────────────────────────────────────
+
+  5.12 assurance_methods
+  ───────────────────────
+  Qué es: 5 métodos para verificar que los controles funcionan.
+
+  ASSUR-01: Red Teaming (con 7 herramientas específicas)
+  ASSUR-02: Behavioral Testing (benchmarks + frameworks de evaluación)
+  ASSUR-03: Explainability Audits (XAI: SHAP, LIME, Grad-CAM)
+  ASSUR-04: Continuous Monitoring & Anomaly Detection (runtime)
+  ASSUR-05: Vulnerability Scanning (DAST, CVE scanners)
+
+  Variables importantes:
+    methods[].method_id        ASSUR-01 a ASSUR-05
+    methods[].covers_risks[]   ASI-IDs que cubre este método
+    methods[].tools[]          Herramientas específicas con URLs (ASSUR-01)
+    methods[].techniques[]     Técnicas detalladas
+
+  Aporte al sistema:
+  Dado el perfil de ASI activos, el sistema selecciona qué métodos de
+  aseguramiento son necesarios. La conexión es: T-IDs activos →
+  threat_catalog.maps_to_asi → ASI-IDs → assurance_methods[covers_risks].
+
+  Limitación actual: el JSON no tiene un campo required_assurance_by_risk
+  en verdict_framework. El sistema debe implementar esa lógica en código
+  (qué ASI requiere qué ASSUR-XX para ser APT).
+
+  Cobertura de ASIs: todos los ASI01-ASI10 están cubiertos por al menos
+  un método. ASI07 solo está en ASSUR-04 (monitoreo general).
+
+  ─────────────────────────────────────────────────────────────────────────────
+
+  5.13 playbooks
+  ───────────────
+  Qué es: 6 guías operativas con 3 pasos cada una (Proactivo, Reactivo,
+  Detective) para mitigar amenazas específicas.
+
+  PB-01: Reasoning Manipulation (T6, T7, T8)
+  PB-02: Memory Poisoning (T1, T5)
+  PB-03: Tool & API Security (T2, T3, T4)
+  PB-04: Agent Autonomy & Oversight (T10, T15)
+  PB-05: Supply Chain & Hallucination (T17, T5)
+  PB-06: Multi-Agent Communication & Trust (T12, T14, T13)
+
+  Variables importantes:
+    items[].playbook_id              PB-01 a PB-06
+    items[].mitigates_threat_ids[]   T-IDs que mitiga
+    items[].covers_risks[]           ASI-IDs que cubre
+    items[].steps[].nature           "Proactive", "Reactive", "Detective"
+    items[].steps[].actions[]        Acciones concretas del paso
+
+  Aporte al sistema:
+  Son la capa de respuesta operacional. A diferencia de controls_catalog
+  (qué implementar) y assurance_methods (cómo verificar), los playbooks
+  indican qué hacer cuando algo falla o está en riesgo. El sistema los
+  selecciona según T-IDs activos y los incluye en el reporte como guías
+  de respuesta.
+
+  ─────────────────────────────────────────────────────────────────────────────
+
+  5.14 verdict_framework
+  ───────────────────────
+  Qué es: el marco de decisión final. Define los 3 veredictos posibles y
+  qué controles son críticos por ASI.
+
+  Variables importantes:
+    verdicts[].verdict                APT / APT_WITH_RESTRICTIONS / NOT_APT
+    verdicts[].criteria               Criterios (texto — ver limitación)
+    high_severity_risks.risks[]       ASI cuyo control crítico faltante → NOT_APT
+    critical_controls_by_risk         Mapa ASI-ID → [CTRL-IDs obligatorios]
+    high_risk_business_domains[]      Dominios de negocio de alto riesgo (EU AI Act)
+
+  IMPORTANTE — separación de capas: verdict_framework es la capa de DECISIÓN del
+  sistema. OWASP no define un veredicto de aptitud para producción, así que los
+  veredictos, high_severity_risks y los umbrales son criterio explícito del
+  sistema construido sobre insumos OWASP. Esto NO contradice el argumento de
+  fidelidad: la taxonomía (flags→amenazas→ASI→controles) es 100% OWASP; el
+  veredicto es la contribución propia y declarada del sistema.
+
+  Aporte al sistema:
+  Es el nodo de salida. Para cada ASI activo, el sistema consulta
+  critical_controls_by_risk y verifica si los controles están implementados.
+  Según el resultado genera el veredicto.
+
+  Limitaciones conocidas (requieren lógica en código):
+  1. Los criterios de APT/NOT_APT son texto libre — el sistema debe
+     implementar la función de evaluación en código.
+  2. No existe required_assurance_by_risk — el sistema debe decidir en código
+     qué métodos ASSUR son obligatorios para cada nivel de veredicto.
+  3. ASI07 no aparece en los criterios de NOT_APT — verificar si el negocio
+     considera multi-agent trust risk como bloqueante de producción.
+  4. "Verificado" no está definido — el sistema debe implementar el mecanismo
+     (checklist, test ejecutado, declaración firmada, etc.).
+
+
+6. EL PIPELINE COMPLETO
+--------------------------------------------------------------------------------
+Este es el flujo de datos a través del JSON, paso a paso:
+
+  PASO 1  Registro
+          El evaluador responde registration_questionnaire.
+          Cada respuesta afirmativa activa capability_flags.
+          Opcional: elegir un agent_type_profile para pre-poblar flags.
+
+  PASO 2  Activación de amenazas
+          Por cada capability_flag activo:
+          → buscar en capability_taxonomy.steps[].capability_flags
+          → activar el STEP
+          → extraer threats_detail[].threat_id → lista de T-IDs activos
+
+  PASO 3  Activación de riesgos ASI
+          Por cada T-ID activo:
+          → buscar en threat_catalog[].maps_to_asi
+          → acumular ASI-IDs activos
+          Verificación cruzada: comparar con cross_mapping (Appendix A)
+
+  PASO 4  Análisis de superficie de ataque (complementario)
+          Por cada capability_flag activo:
+          → buscar en key_components[].capability_flag_refs → KCs activos
+          → leer associated_threats y attack_surface_summary
+          Por cada flag operacional (api_access, code_execution, etc.):
+          → buscar en operational_capabilities[].capability_flag_refs
+          → leer core_threats y controles específicos con acciones
+
+  PASO 5  Selección de controles
+          Este paso tiene dos sub-paths con propósitos distintos. No son
+          redundantes aunque ambos partan de los mismos datos de entrada.
+
+          Sub-path A — para el VEREDICTO (evaluación binaria):
+          Por cada ASI activo (conjunto acumulado del paso 3):
+          → consultar verdict_framework.critical_controls_by_risk[ASI-ID]
+          → obtener lista de CTRL-IDs obligatorios mínimos
+          → resultado: "¿el agente tiene implementados estos controles críticos?"
+          → esta respuesta determina APT / APT_WITH_RESTRICTIONS / NOT_APT
+
+          Sub-path B — para el REPORTE DE RECOMENDACIONES (lista completa):
+          Por cada T-ID activo:
+          → buscar en controls_catalog[].controls[].mitigates_threats
+          → filtrar por applicable_lifecycle_phases según fase del agente
+          → resultado: conjunto completo de controles recomendados
+          → los controles críticos del sub-path A son un subconjunto de estos
+
+          La razón de los dos paths: critical_controls_by_risk es una lista
+          curada y reducida (los mínimos para el veredicto). controls_catalog
+          tiene todos los controles disponibles (recomendaciones completas).
+          Usar solo el sub-path A daría un veredicto pero no un reporte útil.
+          Usar solo el sub-path B daría recomendaciones pero sin saber cuáles
+          son bloqueantes para el veredicto.
+
+          Por arquitectura declarada:
+          → buscar en architecture_types[arch_id].security_practices
+          → agregar siempre las prácticas de ARCH-CROSS
+          Por fase del ciclo de vida:
+          → buscar en lifecycle_security.phases[phase_id].practices
+
+  PASO 6  Selección de métodos de aseguramiento
+          Por cada ASI activo:
+          → buscar en assurance_methods[].covers_risks
+          → seleccionar métodos ASSUR-XX aplicables
+          Por cada T-ID activo:
+          → buscar en playbooks[].mitigates_threat_ids
+          → seleccionar playbooks aplicables
+
+  PASO 7  Generación del veredicto
+          Para cada CTRL-ID en critical_controls_by_risk[ASI activo]:
+          → verificar si está implementado (lógica a implementar en código)
+          Si todos los críticos están cubiertos → APT
+          Si hay críticos pendientes menores o HITL incompleto → APT_WITH_RESTRICTIONS
+          Si falta un crítico de un ASI en verdict_framework.high_severity_risks
+          (ASI01/02/03/05/06) o no hay logging/IR plan → NOT_APT
+          Consultar high_risk_business_domains: si el negocio es de alto riesgo,
+          aplicar criterios más estrictos.
+
+7. relacion entre capability_flags threaths y risks
+--------------------------------------------------------------------------------
+
+Son tres niveles de abstracción conectados en una única dirección:
+
+```
+capability_flags → T-IDs → ASI-IDs
+(qué hace)         (qué puede fallar)   (cómo se clasifica)
+```
+
+`capability_flags` describen lo que el agente puede hacer: `api_access`, `code_execution`, `rag_access`. Son hechos funcionales, no juicios de riesgo.
+
+Los **T-IDs (amenazas)** describen lo que puede ser explotado a partir de esas capacidades. La relación se encuentra en `capability_taxonomy`: si `code_execution = true` → `STEP-3` activo → `T11 (Unexpected RCE)` activado. Un mismo flag puede activar múltiples amenazas.
+
+Los **ASI-IDs (riesgos)** representan la clasificación de alto nivel de esas amenazas. La relación se encuentra en `threat_catalog.maps_to_asi`: `T11 → ASI05`.
+
+La relación es **M:N**:
+
+* Una amenaza puede pertenecer a varios riesgos.
+* Un riesgo puede agrupar varias amenazas.
+
+La dirección del flujo es siempre hacia adelante, nunca al revés:
+
+* Los flags no conocen amenazas directamente; únicamente activan STEPs.
+* Las amenazas no conocen los flags; únicamente son activadas por STEPs.
+* Los ASIs no conocen ni los flags ni los STEPs; únicamente agrupan amenazas.
+
+Esto implica que, si se quiere responder a la pregunta:
+
+> ¿Qué riesgos activa un agente con `code_execution`?
+
+el sistema debe recorrer los tres niveles:
+
+```
+flag → STEP → T-IDs → ASI-IDs
+```
+
+No existe una relación directa entre `capability_flags` y `ASI-IDs`.
+
+8. LO QUE EL SISTEMA DEBE IMPLEMENTAR (no está en el JSON)
+--------------------------------------------------------------------------------
+El JSON es la base de conocimiento. La lógica de evaluación vive en el código.
+
+  a) Función de evaluación de cobertura de controles
+     Determina si un CTRL-ID está "implementado y verificado". El JSON define
+     qué controles son necesarios; el código define cómo se verifica.
+
+  b) Mapeo required_assurance_by_risk
+     Qué método ASSUR-XX es obligatorio para que un ASI sea considerado
+     cubierto en el veredicto APT. Hoy es criterio de texto en el JSON.
+
+  c) Posición de ASI07 en NOT_APT
+     Decidir si un agente multi-agente sin controles de comunicación seguros
+     debe ser NOT_APT o APT_WITH_RESTRICTIONS.
+
+  d) Definición de "verificado"
+     Un checklist, un test automatizado, una declaración firmada, o una
+     combinación. Esta definición determina cuándo un control cuenta como
+     satisfecho.
+
+  e) Interfaz de entrada (API, formulario, CLI)
+     El JSON tiene las preguntas de registro pero no la interfaz.
+
+  f) Formato de salida del reporte
+     El JSON provee los datos; el sistema decide qué mostrar y en qué orden.
+
+
+================================================================================
+  FIN DEL DOCUMENTO
+================================================================================

@@ -1,0 +1,247 @@
+================================================================================
+INFRAESTRUCTURA Y DISTRIBUCIÓN POR CONTENEDORES
+Cómo se despliega el sistema modular tipo SOAR en contenedores
+Archivo: infraestructura_contenedores.txt
+================================================================================
+
+
+SECCIÓN 0 — PROPÓSITO
+────────────────────────────────────────────────────────────────────────────────
+
+Este documento describe cómo se distribuye el sistema en contenedores: qué
+contenedor contiene qué, por qué se agrupan así, cómo se comunican, qué estado
+tienen y cómo escalan. También define el camino de crecimiento (de un despliegue
+mínimo funcional a uno completo y escalable).
+
+Complementa a arquitectura_sistema.txt (componentes lógicos) y a
+assessment_context.txt (contrato de datos). Aquí se baja a infraestructura.
+
+
+SECCIÓN 1 — PRINCIPIO: CONTENERIZAR POR FRONTERA, NO POR MÓDULO
+────────────────────────────────────────────────────────────────────────────────
+
+Un error a evitar: un contenedor por módulo lógico (M1, M2, M3…). No conviene.
+Los módulos deterministas (M1–M5, M7, R) son un pipeline secuencial de funciones
+puras que SIEMPRE corren juntas en la misma evaluación y comparten el mismo
+Knowledge Base. Separarlos añadiría saltos de red y complejidad para cero
+beneficio.
+
+Las fronteras REALES de contenedor son tres, cada una por una razón distinta:
+
+  FRONTERA 1 — El motor determinista → UN solo contenedor.
+    Razón: cohesión (corren en secuencia), stateless, comparten KB. Es una
+    unidad de despliegue natural.
+
+  FRONTERA 2 — Cada herramienta externa → SU PROPIO contenedor.
+    Razón (doble):
+      a) Runtimes en conflicto: ZAP es Java, Trivy es Go, promptfoo es Node,
+         Semgrep es Python. No caben limpiamente en una misma imagen.
+      b) Aislamiento de seguridad: son herramientas que ejecutan payloads
+         ofensivos. Sandboxearlas en contenedores efímeros ES aplicarnos a
+         nosotros mismos el control CTRL-TOOL-02 (Mandatory Sandboxing) del KB.
+         El sistema practica lo que evalúa.
+
+  FRONTERA 3 — El estado → su propio contenedor con volumen.
+    Razón: la base de datos es la única pieza stateful; se aísla para poder
+    reiniciar/replicar el resto sin pérdida.
+
+
+SECCIÓN 2 — DISTRIBUCIÓN RECOMENDADA (VISTA GENERAL)
+────────────────────────────────────────────────────────────────────────────────
+
+  ┌────────────────────────────────────────────────────────────────────────┐
+  │  ORQUESTACIÓN DE CONTENEDORES (Docker Compose → luego Kubernetes)       │
+  │                                                                          │
+  │  ┌──────────────┐    ┌─────────────────────────────┐                    │
+  │  │ api-gateway  │──► │ engine  (PLANO DETERMINISTA)│                    │
+  │  │ intake +     │    │ orquestador + M1–M5, M7, R  │                    │
+  │  │ REST / CLI   │    │ + KB Service (volumen RO)   │                    │
+  │  └──────────────┘    └───────────────┬─────────────┘                    │
+  │                                        │                                 │
+  │                        ┌───────────────▼───────────┐   ┌─────────────┐   │
+  │                        │ assurance-coordinator (M6)│──►│ assessment  │   │
+  │                        │ checklist + HITL +        │   │   -db       │   │
+  │                        │ despacho de conectores    │   │ (volumen)   │   │
+  │                        └───────────────┬───────────┘   └─────────────┘   │
+  │                                        │ crea/destruye por job           │
+  │      ┌──────────────┬──────────────────┼──────────────┬─────────────┐    │
+  │      ▼              ▼                  ▼              ▼             ▼    │
+  │ ┌──────────┐ ┌──────────┐       ┌──────────┐  ┌──────────┐  ┌────────┐  │
+  │ │connector-│ │connector-│       │connector-│  │connector-│  │  ...   │  │
+  │ │promptfoo │ │   zap    │       │  trivy   │  │ semgrep  │  │        │  │
+  │ └──────────┘ └──────────┘       └──────────┘  └──────────┘  └────────┘  │
+  │  (EFÍMEROS · sandbox · uno por herramienta · se destruyen tras el job)  │
+  └────────────────────────────────────────────────────────────────────────┘
+         ▲
+         └── volumen READ-ONLY: knowledge_base + schemas (versionado)
+
+
+SECCIÓN 3 — INVENTARIO DE CONTENEDORES
+────────────────────────────────────────────────────────────────────────────────
+
+  CONTENEDOR              CONTIENE                         ESTADO    CICLO       ESCALA
+  ──────────────────────  ───────────────────────────────  ────────  ──────────  ─────────────────
+  api-gateway             Intake + fachada REST/CLI        stateless long-running réplicas tras LB
+  engine                  Orquestador + M1–M5, M7, R       stateless long-running réplicas (es puro)
+                          + KB Service (KB en volumen RO)
+  assurance-coordinator   M6: checklist, HITL, despacho    semi-     long-running 1–N con la cola
+                                                           stateful
+  assessment-db           Assessment Store (casos+auditor.) STATEFUL  long-running vertical / réplica
+  connector-*             1 herramienta + adaptador        stateless EFÍMERO      pool / on-demand
+                          run(target,config)→evidencia               (por job)
+
+  Detalles clave:
+  - engine monta el KB como VOLUMEN DE SOLO LECTURA (no dentro de la imagen),
+    para actualizar la versión del KB sin reconstruir. Cada evaluación registra
+    kb_version.
+  - assurance-coordinator se separa del engine porque es el plano NO
+    determinista y gestiona jobs largos/asíncronos; el engine no debe bloquearse
+    esperando a ZAP o a la attestación humana.
+  - connector-* son EFÍMEROS: el coordinator los levanta para el job, recoge la
+    evidencia y los destruye. Sin persistencia, red restringida, límites de
+    CPU/memoria/tiempo. Esto contiene el blast radius de correr herramientas
+    ofensivas.
+  - assessment-db es el ÚNICO stateful. El resto se reinicia/replica sin pérdida.
+
+
+SECCIÓN 4 — CATÁLOGO DE CONECTORES (imágenes)
+────────────────────────────────────────────────────────────────────────────────
+
+  Cada conector = una imagen que envuelve la herramienta + un adaptador delgado
+  que expone la interfaz uniforme run(target, config) → evidence{}.
+
+  IMAGEN                 BASE RUNTIME  CUBRE (ejemplos)                  ASSUR
+  ─────────────────────  ────────────  ────────────────────────────────  ──────────
+  connector-promptfoo    Node          prompt injection, output, PII     01/02
+  connector-agentdojo    Python        tool injection, HITL bypass       01
+  connector-agentfence   Python        system prompt leak, allow/deny    01
+  connector-agentpoison  Python        memory poisoning / persistencia   01
+  connector-zap          Java          SQLi, XSS, SSRF, auth, API GW      01/05
+  connector-trivy        Go            dependencias, contenedores (SC)    05
+  connector-semgrep      Python        static analysis de código          05
+  connector-testssl      Shell         TLS/mTLS inter-agente              04
+  connector-observ       (adapter)     Langfuse/LangSmith baseline        04
+  (manual/tabletop)      n/a           kill switch, IR plan, replay       proceso_humano
+
+  Añadir un conector NO toca el core: se construye la imagen y se registra en el
+  Connector Manager del assurance-coordinator. Los de categoría proceso_humano no
+  tienen imagen; se resuelven vía attestación HITL.
+
+
+SECCIÓN 5 — REDES, VOLÚMENES Y SEGURIDAD
+────────────────────────────────────────────────────────────────────────────────
+
+  REDES (segmentación):
+    - net-core: api-gateway ↔ engine ↔ assurance-coordinator ↔ assessment-db.
+    - net-connectors: assurance-coordinator ↔ connector-*. Aislada de net-core.
+    - Los connector-* NO tienen acceso a assessment-db ni al KB directamente.
+      Reciben target+config del coordinator y devuelven evidencia. Nada más.
+    - Egress de los connector-* restringido a lo mínimo (el target evaluado).
+
+  VOLÚMENES:
+    - kb-volume (READ-ONLY): montado en engine (y en coordinator si necesita
+      metadata de controles/ASSUR). Versionado.
+    - db-volume: persistencia de assessment-db. Backups.
+    - Los connector-* NO montan volúmenes persistentes (efímeros por diseño).
+
+  SEGURIDAD (dogfooding de los controles del propio KB):
+    - connector-* corren como usuario no-root, filesystem read-only, límites de
+      recursos, sin capabilities extra, red mínima → CTRL-TOOL-02 / CTRL-DEP-01.
+    - Secrets (credenciales de herramientas/targets) vía gestor de secretos, no
+      en imágenes ni variables planas → CTRL-BUILD-04 (secure config).
+    - Logs inmutables de qué conector corrió contra qué target → CTRL-MON-01.
+    - api-gateway aplica autenticación/rate-limiting → CTRL-DEP-02.
+
+
+SECCIÓN 6 — COMUNICACIÓN Y FLUJO ENTRE CONTENEDORES
+────────────────────────────────────────────────────────────────────────────────
+
+  1. Cliente → api-gateway: envía los 3 inputs (wizard, business_context, aibom).
+  2. api-gateway → engine: crea el Assessment Context (persistido en db).
+  3. engine ejecuta M1–M5 (in-process, sin red): produce análisis + checklist.
+     Estado del caso pasa a "awaiting_assurance" en la db.
+  4. engine → assurance-coordinator: entrega el checklist y los ASI activos.
+  5. assurance-coordinator:
+       a) expone el checklist para attestación humana (HITL) vía api-gateway.
+       b) despacha jobs a los connector-* según ASSUR relevantes.
+       c) recibe evidencia (humana + herramientas), la normaliza.
+  6. assurance-coordinator → engine: entrega la evidencia consolidada.
+  7. engine ejecuta M7 (veredicto) y R (reporte). Estado "completed" en db.
+  8. api-gateway → cliente: entrega el reporte final.
+
+  Nota: los pasos 3 y 7 son síncronos y rápidos (cómputo puro). El paso 5 es
+  asíncrono y puede durar (herramientas + humano); por eso el caso se PAUSA en db
+  y se reanuda cuando llega la evidencia. El engine no se bloquea esperando.
+
+
+SECCIÓN 7 — CAMINO DE CRECIMIENTO / PROGRESIÓN DE IMPLEMENTACIÓN
+────────────────────────────────────────────────────────────────────────────────
+
+La infraestructura crece por ETAPAS. Cada etapa es funcional y desplegable; la
+siguiente añade capacidad sin cambiar los contratos (Assessment Context) ni el
+orquestador.
+
+  ETAPA 0 — MONOLITO MODULAR (prueba de concepto)
+    Contenedores: engine + assessment-db  (2 contenedores).
+    - engine incluye gateway + orquestador + M1–M5, M7, R + KB (volumen RO).
+    - Attestación 100% MANUAL (sin conectores): el evaluador rellena el checklist.
+    - Ya produce un veredicto end-to-end real.
+    Objetivo: validar el pipeline determinista y el contrato de datos.
+    Herramienta de despliegue: Docker Compose.
+
+  ETAPA 1 — SEPARAR EL PLANO DE ASEGURAMIENTO
+    Contenedores: + assurance-coordinator  (3 contenedores).
+    - Se extrae M6 a su propio contenedor.
+    - Aún sin conectores automáticos: gestiona el checklist y la attestación
+      humana de forma estructurada.
+    Objetivo: aislar el plano no determinista; preparar el terreno para tools.
+
+  ETAPA 2 — PRIMEROS CONECTORES
+    Contenedores: + connector-promptfoo, + connector-zap, + connector-trivy
+    (los de mayor cobertura primero).
+    - El assurance-coordinator los levanta efímeros por job y normaliza evidencia.
+    - Se añaden más conectores uno a uno, sin tocar el core.
+    Objetivo: automatizar la evidencia de los controles más comunes.
+
+  ETAPA 3 — ASINCRONÍA Y COLA
+    Contenedores: + queue (Redis/RabbitMQ) [+ workers si hace falta].
+    - El despacho de conectores pasa a ser asíncrono vía cola.
+    - Permite paralelizar herramientas y absorber picos de carga.
+    Objetivo: throughput y resiliencia ante herramientas lentas.
+
+  ETAPA 4 — ESCALADO HORIZONTAL Y ORQUESTACIÓN
+    Migración de Docker Compose a Kubernetes.
+    - engine y api-gateway → réplicas tras balanceador (son stateless).
+    - connector-* → pool escalable / jobs de K8s efímeros.
+    - assessment-db → instancia gestionada con réplicas y backups.
+    - Segmentación de red y políticas de seguridad formalizadas.
+    Objetivo: operar a escala con alta disponibilidad.
+
+  ETAPA 5 — EXTENSIONES DE PRODUCTO (v2)
+    - Módulo agent_scope (refinamiento por capability) insertado entre M4 y M5,
+      como nuevo componente dentro del engine, respetando el contrato.
+    - Integración con CI/CD (evidencia automática de CTRL-DEP-03) y SIEM
+      (evidencia de CTRL-MON) como conectores adicionales.
+    - Nuevos playbooks (quick scan, reassess) como datos, mismo orquestador.
+    Objetivo: profundidad de análisis y automatización de evidencia.
+
+  PRINCIPIO TRANSVERSAL DE LA PROGRESIÓN:
+    En cada etapa, lo que se añade es un CONTENEDOR o un DATO (conector, KB,
+    playbook), nunca una reescritura del núcleo. La frontera entre plano
+    determinista y plano de aseguramiento se mantiene en todas las etapas.
+
+
+SECCIÓN 8 — RESUMEN
+────────────────────────────────────────────────────────────────────────────────
+
+  - Se conteneriza por FRONTERA (aislamiento/runtime/estado), no por módulo.
+  - Un deployable para el análisis determinista (engine), un contenedor aislado
+    por herramienta (connector-*), y una sola pieza con estado (assessment-db).
+  - Los conectores efímeros y sandboxeados aplican al propio sistema los
+    controles que evalúa (CTRL-TOOL-02, CTRL-DEP-01).
+  - El crecimiento es por etapas: de 2 contenedores (monolito modular) a un
+    despliegue en Kubernetes con cola y pool de conectores, sin cambiar contratos.
+
+================================================================================
+FIN DEL DOCUMENTO
+================================================================================

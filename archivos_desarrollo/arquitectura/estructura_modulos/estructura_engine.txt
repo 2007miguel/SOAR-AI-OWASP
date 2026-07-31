@@ -1,0 +1,234 @@
+================================================================================
+ESTRUCTURA DE DESARROLLO — CONTENEDOR 1: engine (MOTOR DETERMINISTA)
+Distribución de archivos — stack Python
+Archivo: estructura_engine.txt
+================================================================================
+
+
+SECCIÓN 0 — PROPÓSITO Y ALCANCE
+────────────────────────────────────────────────────────────────────────────────
+
+Distribución de archivos del contenedor `engine`: el motor determinista que
+orquesta y ejecuta todo el flujo de validación (M1–M5, M7, R) más el orquestador,
+el KB Service y, en la Etapa 0, el gateway API.
+
+NO cubre los contenedores del plano de aseguramiento (assurance-coordinator ni
+connector-*): están en estructura_assurance_coordinator.txt y
+estructura_connectors.txt. El engine define el PUERTO hacia el aseguramiento, no
+su implementación.
+
+Stack: Python. FastAPI (gateway), pydantic (contratos y validación), pydantic-
+settings (config). El KB se carga desde un volumen de solo lectura (no se hornea).
+
+Referencias: ../arquitectura/arquitectura_sistema.txt (componentes lógicos),
+../arquitectura/assessment_context.txt (contrato de datos),
+../arquitectura/infraestructura_contenedores.txt (despliegue y etapas).
+
+
+SECCIÓN 1 — PRINCIPIOS DE LA DISTRIBUCIÓN
+────────────────────────────────────────────────────────────────────────────────
+
+D1. UN MÓDULO DEL PIPELINE = UN ARCHIVO
+    Cada módulo (M1–M5, M7, R) es un archivo en modules/. El nombre refleja el
+    paso. Mapeo doc↔código trivial y auditable.
+
+D2. LOS CONTRATOS SON CÓDIGO (pydantic)
+    El Assessment Context se materializa en contracts/ como modelos pydantic. Es
+    la ÚNICA fuente del modelo de datos. La matriz lee/escribe se codifica en la
+    interfaz Module (reads/writes) y se puede validar en runtime.
+
+D3. TODA LA SEMÁNTICA OWASP VIVE EN kb/ (servicio), NO EN LOS MÓDULOS
+    Ningún módulo hardcodea flags, amenazas, ASI o controles. Consultan el KB
+    Service. Cambiar OWASP = nuevo KB (volumen), sin tocar módulos.
+
+D4. EL PLANO DE ASEGURAMIENTO ES UN PUERTO
+    assurance/ define una interfaz (checklist fuera, evidencia dentro). En Etapa 0
+    hay un adaptador manual. El coordinator y los conectores reales son otros
+    contenedores que implementan ese puerto.
+
+D5. EL PLAYBOOK ES DATO
+    orchestrator/playbooks/*.yaml define la secuencia. El orquestador lo
+    interpreta; no tiene la secuencia hardcodeada.
+
+D6. FRONTERAS LISTAS PARA DIVIDIR
+    api/, assurance/ y persistence/ están aislados para poder extraerse a otros
+    contenedores en etapas posteriores sin tocar el núcleo.
+
+
+SECCIÓN 2 — ÁRBOL DE ARCHIVOS
+────────────────────────────────────────────────────────────────────────────────
+
+  engine/
+  ├── pyproject.toml                 # deps, build, tooling (ruff, mypy, pytest)
+  ├── CLAUDE.md                      # doc del módulo (hace de README)
+  ├── Dockerfile                     # imagen del engine
+  ├── docker-compose.yml             # Etapa 0: engine + assessment-db
+  ├── .env.example                   # KB_PATH, DB_URL, LOG_LEVEL, …
+  │
+  ├── kb_volume/                     # MONTADO como volumen RO (no se hornea)
+  │   └── (owasp_asi_knowledge_base.json, wizard schema, business_context schema)
+  │
+  ├── src/
+  │   └── validation_engine/
+  │       ├── __init__.py
+  │       ├── main.py                # arranque FastAPI + carga KB + selfcheck
+  │       ├── config.py              # settings (pydantic-settings)
+  │       ├── log_setup.py           # logging estructurado (nombre != stdlib logging)
+  │       │
+  │       ├── contracts/             # EL CONTRATO (Assessment Context como código)
+  │       │   ├── __init__.py
+  │       │   ├── context.py         # AssessmentContext (objeto raíz)
+  │       │   ├── inputs.py          # CapabilityFlags, BusinessContext, Aibom
+  │       │   ├── analysis.py        # capa analysis (steps, threats, asi, escal.)
+  │       │   ├── controls.py        # capa controls (critical_required, recommended)
+  │       │   ├── assurance.py       # checklist, attestations, tool_results
+  │       │   ├── verdict.py         # capa verdict (result, rationale, trace)
+  │       │   └── enums.py           # Status, VerdictResult, categorías, IDs
+  │       │
+  │       ├── kb/                    # KNOWLEDGE BASE SERVICE
+  │       │   ├── __init__.py
+  │       │   ├── models.py          # modelos pydantic del KB
+  │       │   ├── loader.py          # carga y valida el JSON; kb_version
+  │       │   ├── service.py         # API de consulta (ver Sección 4)
+  │       │   └── selfcheck.py       # cobertura de flags + activated_risks==Appendix A
+  │       │
+  │       ├── orchestrator/
+  │       │   ├── __init__.py
+  │       │   ├── orchestrator.py    # ejecuta el playbook sobre el contexto
+  │       │   ├── playbook.py        # carga/valida el playbook YAML
+  │       │   └── playbooks/
+  │       │       └── full_validation.yaml
+  │       │
+  │       ├── modules/               # LOS MÓDULOS DEL PIPELINE (uno por paso)
+  │       │   ├── __init__.py
+  │       │   ├── base.py            # interfaz Module (reads/writes/run) — Sección 5
+  │       │   ├── m1_intake_validation.py
+  │       │   ├── m2_threat_mapper.py
+  │       │   ├── m3_risk_mapper.py
+  │       │   ├── m4_context_escalator.py
+  │       │   ├── m5_control_resolver.py
+  │       │   ├── m7_verdict_engine.py
+  │       │   └── reporter.py
+  │       │
+  │       ├── assurance/             # PUERTO al plano de aseguramiento (no ejecuta tools)
+  │       │   ├── __init__.py
+  │       │   ├── port.py            # interfaz AssurancePort (emite checklist, recibe evidencia)
+  │       │   └── manual_adapter.py  # Etapa 0: attestación 100% manual
+  │       │
+  │       ├── persistence/
+  │       │   ├── __init__.py
+  │       │   ├── store.py           # interfaz AssessmentStore (guardar/leer/reanudar)
+  │       │   └── sqlalchemy_store.py# impl Postgres (JSONB); store abstracto/swappable
+  │       │
+  │       └── api/                   # GATEWAY (plegado en el engine en Etapa 0)
+  │           ├── __init__.py
+  │           ├── routes.py          # POST /assessments, GET /assessments/{id}, …
+  │           └── dto.py             # DTOs de request/response
+  │
+  └── tests/
+      ├── conftest.py
+      ├── fixtures/                  # inputs de ejemplo + KB de prueba
+      ├── kb/
+      │   └── test_selfcheck.py      # activated_risks == derivación Appendix A
+      ├── modules/
+      │   ├── test_m1_intake.py
+      │   ├── test_m2_threat_mapper.py
+      │   ├── test_m3_risk_mapper.py # golden: set de flags → set de ASI esperado
+      │   ├── test_m4_escalator.py
+      │   ├── test_m5_control_resolver.py
+      │   └── test_m7_verdict_engine.py
+      └── orchestrator/
+          └── test_full_validation.py# flujo end-to-end con attestación manual
+
+
+SECCIÓN 3 — RESPONSABILIDAD POR CARPETA
+────────────────────────────────────────────────────────────────────────────────
+
+  contracts/    El modelo de datos que fluye por todo el sistema (assessment_
+                context.txt hecho código). Solo tipos, validación y defaults.
+
+  kb/           El único lugar que entiende la estructura del KB. loader.py lo
+                carga y fija kb_version. service.py expone consultas de alto nivel.
+                selfcheck.py corre al arranque y falla el arranque si el KB es
+                incoherente (cobertura de flags, o activated_risks != Appendix A).
+
+  orchestrator/ Coordinación pura. Lee el playbook (dato), instancia los módulos
+                en orden, persiste transiciones, gestiona la pausa de aseguramiento.
+
+  modules/      La lógica de análisis, un archivo por paso. Deterministas y
+                testeables de forma aislada.
+
+  assurance/    El PUERTO hacia el plano no determinista. Etapa 0: manual_adapter.
+                Etapas siguientes: lo implementa el assurance-coordinator por red.
+
+  persistence/  Abstracción del Assessment Store. Postgres (Etapa 0, JSONB);
+                el backend es swappable cambiando solo la impl.
+
+  api/          El gateway REST. En Etapa 0 dentro del engine; aislado para
+                extraerse a un contenedor api-gateway propio.
+
+  tests/        Espejo de la estructura. Golden tests (mismos inputs → mismos
+                ASI/controles): la mejor garantía de fidelidad al marco.
+
+
+SECCIÓN 4 — LA API DEL KB SERVICE (kb/service.py)
+────────────────────────────────────────────────────────────────────────────────
+
+  Los módulos consultan el KB SOLO por estos métodos (ejemplos), nunca recorriendo
+  el JSON directamente:
+
+    steps_for_flag(flag) -> [step_id]
+    threats_for_step(step_id) -> [T-ID]              # activated_threats
+    maps_to_asi(threat_id) -> [ASI-ID]               # Appendix A
+    oc_for_flag(flag) -> OperationalCapability?      # rama critical_systems_access
+    critical_controls_for_asi(asi_id) -> [CTRL-ID]
+    controls_mitigating(threat_id) -> [Control]
+    controls_for_phases(controls, phases) -> [Control]
+    high_risk_domains() -> [domain]
+    high_severity_risks() -> [ASI-ID]
+    architecture_recommendations(arch_id) -> {...}
+    assurance_methods_for_asi(asi_id) -> [ASSUR-ID]
+    kb_version() -> str
+
+
+SECCIÓN 5 — LA INTERFAZ Module (modules/base.py)
+────────────────────────────────────────────────────────────────────────────────
+
+    class Module(Protocol):
+        name: str
+        reads:  list[str]   # ej. "analysis.active_threats"
+        writes: list[str]   # ej. "analysis.active_asi"
+        def run(self, ctx: AssessmentContext, kb: KBService) -> AssessmentContext: ...
+
+  El orquestador puede verificar en runtime que un módulo solo escribió los campos
+  de `writes` → la matriz lee/escribe se vuelve garantía ejecutable.
+
+
+SECCIÓN 6 — ALINEACIÓN CON CONTENEDORES Y ETAPAS
+────────────────────────────────────────────────────────────────────────────────
+
+  Etapa 0: el contenedor engine contiene src/validation_engine/ completo (gateway,
+  persistencia y assurance/manual_adapter dentro). compose levanta engine + db.
+
+  Evolución sin reescritura:
+    - Etapa 1: assurance/manual_adapter → adaptador que habla con el
+      assurance-coordinator por red. El puerto (port.py) NO cambia.
+    - Etapa 4: api/ se extrae a un contenedor api-gateway. Los contratos no cambian.
+    - persistence: el backend de BD se cambia tocando solo la impl (store abstracto).
+
+
+SECCIÓN 7 — ORDEN DE CONSTRUCCIÓN SUGERIDO
+────────────────────────────────────────────────────────────────────────────────
+
+  1. contracts/          El modelo de datos primero (todo depende de él).
+  2. kb/                 Cargar el KB + consultas + selfcheck al arranque.
+  3. modules/ M1–M5, M7  Con golden tests por módulo.
+  4. reporter.py         Ensamblado del reporte.
+  5. orchestrator/ + full_validation.yaml   Encadenar con attestación manual →
+                         flujo end-to-end (Etapa 0).
+  6. persistence/ (Postgres) Guardar y reanudar casos.
+  7. api/ + main.py + Dockerfile + compose   Exponer por REST y desplegar.
+
+================================================================================
+FIN DEL DOCUMENTO
+================================================================================

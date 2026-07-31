@@ -1,0 +1,47 @@
+services:
+  engine:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file: .env
+    volumes:
+      - ./kb_volume:/app/kb:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: on-failure
+
+  # Plano de aseguramiento (M6). Comparte la MISMA BD (db/soar_db) creando sus
+  # propias tablas (coordinator_sessions, connector_jobs); nunca toca assessments.
+  # Reutiliza .env para el DB_URL compartido (host=db). ENGINE_URL apunta al engine.
+  coordinator:
+    build: ../modulo_assurance_coordinator
+    ports:
+      - "8100:8100"
+    env_file: .env                 # aporta DB_URL (host=db) y LOG_LEVEL
+    environment:
+      ENGINE_URL: http://engine:8000
+      PORT: "8100"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: on-failure
+
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql   # postgres:18 mount convention (data goes in a version subdir)
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:

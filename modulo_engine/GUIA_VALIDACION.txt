@@ -1,0 +1,270 @@
+================================================================================
+GUÍA DE VALIDACIÓN — MÓDULO ENGINE
+Paso a paso para comprobar el correcto desarrollo del motor determinista
+Archivo: GUIA_VALIDACION.txt
+================================================================================
+
+
+PROPÓSITO
+--------------------------------------------------------------------------------
+Este documento describe CÓMO validar que el módulo engine funciona correctamente
+y es fiel al marco OWASP según el KB desarrollado. Hay DOS niveles de validación,
+complementarios; conviene hacerlos en este orden:
+
+  NIVEL A — Tests automatizados (golden tests)   → lógica en memoria, sin Docker.
+  NIVEL B — Integración / despliegue             → contenedor real + Postgres + API.
+
+Al final se aclara qué es la verificación de reads/writes (C2), que es OPCIONAL
+y no está implementada por decisión de diseño.
+
+
+================================================================================
+NIVEL A — TESTS AUTOMATIZADOS (GOLDEN TESTS)
+================================================================================
+
+QUÉ VALIDAN:
+  La lógica OWASP de cada módulo (M1–M5, M7), el selfcheck del KB y el flujo
+  end-to-end con attestación manual. Corren en memoria contra el KB real
+  (archivos_desarrollo/), sin base de datos ni HTTP. Son la garantía de que la
+  traducción flags → amenazas → riesgos → controles → veredicto no se rompe.
+
+REQUISITOS:
+  - Python 3.12+
+  - pytest  (dependencia de test declarada en pyproject.toml)
+      Instalar:  pip install -e ".[test]"    (o simplemente:  pip install pytest)
+
+CÓMO CORRERLOS (desde la carpeta modulo_engine/):
+      python -m pytest -q
+
+RESULTADO ESPERADO:
+  Todos los tests en verde (p. ej. "42 passed"). Si alguno falla, hay una
+  regresión en la lógica o un desajuste con el KB: revisar antes de desplegar.
+
+QUÉ CUBRE CADA ARCHIVO (tests/):
+  kb/test_selfcheck.py           Coherencia del KB con OWASP:
+                                   - activated_risks == derivación Appendix A
+                                   - sin CTRL-IDs huérfanos
+                                   - cobertura de flags wizard vs KB
+                                   - T9 sin ASI
+  modules/test_m1_intake.py      Validación de inputs (error bloqueante vs warning)
+  modules/test_m2_threat_mapper.py  Golden flags → STEPs → T-IDs (+ vía OC-KC6.6)
+  modules/test_m3_risk_mapper.py    Golden set de flags → set de ASI (Appendix A)
+  modules/test_m4_escalator.py   Escalación por dominio; arquitectura NO toca ASI
+  modules/test_m5_control_resolver.py  Controles críticos por ASI; CTRL-MON-01
+                                   siempre presente; CTRL-DEP-05 si alto riesgo
+  modules/test_m7_verdict_engine.py    Los 3 veredictos y las 5 condiciones NOT_APT
+  orchestrator/test_full_validation.py  Flujo completo run → pausa → resume;
+                                   transiciones de estado; reproducibilidad;
+                                   ruta de error con Reporter(error)
+
+VALORES GOLDEN DE REFERENCIA (derivados del KB real, útiles para inspección manual):
+  short_term_memory      → STEP-2 → T1,T5           → ASI06, ASI08
+  tool_use               → STEP-3 → T2,T3,T4,T11,T16,T17 → ASI02,03,04,05,06,07
+  critical_systems_access→ vía OC-KC6.6 (no STEP)   → T1,T2,T3,T5,T6,T7
+  T9                     → maps_to_asi = []          (no aporta ASI, fiel a OWASP)
+  high_severity_risks    → ASI01, ASI02, ASI03, ASI05, ASI06
+  high_risk_domains      → Finance, Healthcare, Education, Critical Infrastructure,
+                           Legal, Law Enforcement
+
+NOTA: los tests cargan el KB en memoria aplicando la normalización de staging de
+security_practices (ver kb_volume.txt); no escriben archivos temporales.
+
+
+================================================================================
+NIVEL B — INTEGRACIÓN / DESPLIEGUE (CONTENEDOR REAL)
+================================================================================
+
+QUÉ VALIDA:
+  Que el sistema ARMADO Y CORRIENDO responde bien: carga del KB desde el volumen
+  RO, arranque contra Postgres, y los 4 endpoints del ciclo de vida por HTTP.
+
+REQUISITOS:
+  - Docker + Docker Compose
+  - El volumen kb_volume/ poblado (ver Fase 0)
+
+
+--------------------------------------------------------------------------------
+FASE 0 — PREPARAR (antes de levantar)
+--------------------------------------------------------------------------------
+  0.1  Poblar kb_volume/. Usar el script de staging (hace la copia + la
+       normalización automáticamente, de forma reproducible):
+
+         python scripts/stage_kb_volume.py --verify
+
+       Qué hace:
+         - Copia owasp_asi_knowledge_base.json a kb_volume/ APLICANDO la
+           normalización de security_practices (objeto -> array; ver
+           observaciones/kb_volume.txt, sección NORMALIZACIÓN DE STAGING).
+           El KB canónico en archivos_desarrollo/ NO se modifica.
+         - Copia agent_validation_wizard.json  (OBLIGATORIO: selfcheck de cobertura).
+         - Copia agent_business_context.json   (opcional: referencia).
+         - Con --verify, corre los chequeos de arranque del engine
+           (check_volume + load + selfcheck) y confirma que el volumen bootea.
+
+       Re-ejecutar el script cada vez que cambie el KB canónico (evita drift).
+       NO editar el JSON a mano.
+
+  0.2  Crear el .env:
+         cp .env.example .env
+       y ajustar POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB y DB_URL.
+       Recordar: en Docker, el host de DB_URL es el nombre del servicio ("db"),
+       no "localhost" (ver observaciones/persistence_db_url.txt).
+
+
+--------------------------------------------------------------------------------
+FASE 1 — ARRANQUE (valida KB + volumen + base de datos)
+--------------------------------------------------------------------------------
+  1.1  Levantar:
+         docker compose up --build
+
+  1.2  Revisar los logs del contenedor engine. Debe verse la secuencia de
+       arranque SIN errores:
+         check_volume → load → load_wizard_flags → selfcheck → "Engine ready"
+       Si el KB o el wizard faltan, o hay un desfase de cobertura o de coherencia
+       (activated_risks, controles huérfanos), el contenedor NO ARRANCA y falla
+       con un mensaje claro. Ese fallo temprano ES una validación correcta.
+
+  1.3  Confirmar que el servicio db pasó su healthcheck (pg_isready) y que el
+       engine esperó por él antes de conectar (depends_on: service_healthy).
+ 
+  CRITERIO DE ÉXITO: el engine queda "listo" y el compose no reinicia en bucle.
+
+
+--------------------------------------------------------------------------------
+FASE 2 — SALUD DE LA API
+--------------------------------------------------------------------------------
+  2.1  Abrir en el navegador:  http://localhost:8000/docs
+       (Swagger de FastAPI). Debe cargar y listar los 4 endpoints:
+         POST /api/v1/assessments
+         POST /api/v1/assessments/{assessment_id}/attest
+         POST /api/v1/assessments/{assessment_id}/resume
+         GET  /api/v1/assessments/{assessment_id}
+
+  CRITERIO DE ÉXITO: la documentación carga → la API está viva.
+
+
+--------------------------------------------------------------------------------
+FASE 3 — CICLO DE VIDA COMPLETO (los 4 endpoints en orden)
+--------------------------------------------------------------------------------
+  3.1  CREAR el caso:
+         POST /api/v1/assessments
+         Body:
+           {
+             "capability_flags": { "tool_use": true, "api_access": true },
+             "business_context": {
+               "business_domain": "Technology",
+               "architecture_id": "ARCH-SINGLE",
+               "lifecycle_phases": ["runtime"]
+             }
+           }
+         Esperado: HTTP 201, status = "awaiting_assurance", un "checklist" con
+         control_id + why (ASI) + suggested_assur, y "warnings".
+         → GUARDAR el assessment_id devuelto.
+
+  3.2  CONSULTAR estado:
+         GET /api/v1/assessments/{id}
+         Esperado: status = "awaiting_assurance".
+
+  3.3  ATESTAR los controles (se puede llamar varias veces):
+         POST /api/v1/assessments/{id}/attest
+         Body (marcar como implemented cada control del checklist):
+           {
+             "attestations": {
+               "CTRL-TOOL-01": { "status": "implemented" },
+               "CTRL-MON-01":  { "status": "implemented" }
+               /* ... el resto de controles del checklist ... */
+             },
+             "incident_response_plan": true,
+             "red_teaming_done": true
+           }
+         Esperado: "is_ready" pasa a true cuando TODOS los controles críticos
+         tienen attestación.
+
+  3.4  REANUDAR (calcula veredicto + reporte):
+         POST /api/v1/assessments/{id}/resume
+         Esperado: reporte con "verdict" = APT | APT_WITH_RESTRICTIONS | NOT_APT.
+         (Requiere is_ready == true; si no, devuelve 400.)
+
+  3.5  CONSULTAR reporte final:
+         GET /api/v1/assessments/{id}
+         Esperado: status = "completed" con el reporte completo.
+
+  CRITERIO DE ÉXITO: el caso recorre awaiting_assurance → (scoring) → completed
+  y produce un veredicto trazable.
+
+
+--------------------------------------------------------------------------------
+FASE 4 — PERSISTENCIA REAL (Postgres, no memoria)
+--------------------------------------------------------------------------------
+  4.1  Reiniciar solo el engine:
+         docker compose restart engine
+  4.2  Volver a consultar el MISMO caso:
+         GET /api/v1/assessments/{id}
+       Esperado: el caso SIGUE EXISTIENDO con su reporte.
+
+  CRITERIO DE ÉXITO: el caso sobrevive al reinicio → se guardó en Postgres
+  (si estuviera solo en memoria, se habría perdido). Esto valida el volumen de
+  datos db-volume y el store.
+
+
+--------------------------------------------------------------------------------
+FASE 5 — CASOS BORDE (valida los guardas de estado)
+--------------------------------------------------------------------------------
+  5.1  lifecycle_phases vacío → error bloqueante de M1:
+         POST /api/v1/assessments con "lifecycle_phases": []
+         Esperado: status = "error" y una lista "errors" con el motivo
+         (valida la ruta ABORTAR + Reporter(error)).
+
+  5.2  resume antes de atestar todo:
+         POST /api/v1/assessments/{id}/resume con controles pendientes
+         Esperado: HTTP 400 ("not all critical controls attested").
+
+  5.3  Estados equivocados / no encontrado:
+         GET de un id inexistente          → 404
+         attest / resume en estado erróneo → 409
+
+  CRITERIO DE ÉXITO: el sistema rechaza correctamente lo inválido con el código
+  HTTP adecuado (no un 500 ni un comportamiento silencioso).
+
+
+--------------------------------------------------------------------------------
+FASE 6 — FIDELIDAD OWASP DE PUNTA A PUNTA
+--------------------------------------------------------------------------------
+  6.1  Crear un caso con un input conocido (p. ej. capability_flags con
+       tool_use = true) y revisar en el reporte que:
+         - active_risks incluye ASI02, ASI03, ASI04, ASI05, ASI06, ASI07
+         - CTRL-MON-01 aparece en los controles críticos / checklist
+       Comparar con los VALORES GOLDEN del Nivel A.
+
+  CRITERIO DE ÉXITO: el contenedor real produce EXACTAMENTE lo mismo que la
+  lógica ya cubierta por los golden tests → la fidelidad OWASP se conserva en
+  el sistema desplegado.
+
+
+================================================================================
+RESUMEN DE ORDEN MENTAL
+================================================================================
+  1) Que PASEN los tests (Nivel A) antes de desplegar.
+  2) Que ARRANQUE el contenedor (Fase 1 es el mayor filtro).
+  3) Que RESPONDA la API (Fase 2).
+  4) Que el FLUJO FELIZ funcione (Fase 3).
+  5) Que PERSISTA (Fase 4).
+  6) Que RECHACE lo inválido (Fase 5).
+  7) Que sea FIEL a OWASP end-to-end (Fase 6).
+
+
+================================================================================
+FUERA DE ALCANCE (por diseño) — NO confundir con lo anterior
+================================================================================
+  - Verificación en runtime de reads/writes (C2): sería un guardián INTERNO del
+    orquestador que comprueba que cada módulo solo escribió los campos que declara
+    en su contrato (reads/writes). El plan la marca como OPCIONAL ("puede
+    verificar") y no está implementada. No requiere volumen, DB ni endpoints; es
+    independiente de esta guía.
+  - Los conectores de herramientas, el assurance-coordinator (M6 real), la cola y
+    el escalado en Kubernetes pertenecen a OTROS contenedores y etapas
+    posteriores (ver infraestructura_contenedores.txt).
+
+================================================================================
+FIN DEL DOCUMENTO
+================================================================================

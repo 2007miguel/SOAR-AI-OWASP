@@ -1,0 +1,128 @@
+---
+
+### Input del usuario: ¿texto libre o seleccionable?
+
+El texto libre debe descartarse. El sistema necesita valores booleanos; utilizar texto libre requeriría NLP para interpretarlo e introduciría ambigüedad.
+
+La opción correcta es un **wizard estructurado** con preguntas de respuesta binaria o selección cerrada, según el tipo de información requerida:
+
+* **Sí/No** para capacidades discretas:
+
+  * ¿El agente ejecuta código generado por el LLM?
+  * ¿Tiene acceso a la web?
+* **Selección única** para categorías mutuamente excluyentes:
+
+  * Arquitectura (ARCH-SINGLE / ARCH-CENTRAL / ARCH-SWARM)
+* **Selección múltiple** para categorías acumulativas:
+
+  * Fases en las que opera el agente (puede participar simultáneamente en *build* y *runtime*).
+
+El wizard debe organizarse en grupos temáticos, no como una lista plana de 30 preguntas. Un orden razonable sería:
+
+1. Tipo de agente
+2. Arquitectura
+3. Capacidades de herramientas
+4. Capacidades operacionales (API, código, base de datos, web, sistema operativo)
+5. Contexto de negocio
+
+---
+
+### Cómo asegurar cobertura total de `capability_flags`
+
+El problema de cobertura debe resolverse mediante validación automática, no manualmente.
+
+El sistema debe incluir una función que compare:
+
+* Todos los flags referenciados en `capability_taxonomy.steps[].capability_flags`
+* Todos los flags referenciados en `operation_flag_refs`
+* Todos los flags referenciados en `key_components[].capability_flag_refs`
+
+contra todos los flags que `registration_questionnaire` puede activar.
+
+Cualquier flag que aparezca en las taxonomías internas pero que no pueda activarse mediante alguna pregunta del cuestionario representa una condición imposible de evaluar y debe considerarse un error.
+
+Esta validación debería ejecutarse automáticamente durante el arranque del sistema, no depender de una revisión manual.
+
+---
+
+### `agent_type_profiles`: ¿es adecuado como está?
+
+No del todo.
+
+El contenido actual refleja criterios derivados de documentación y guías OWASP. Sin embargo, el problema de fondo es que los perfiles solo son útiles si sus conjuntos de flags son precisos, y esa precisión requiere conocimiento real del negocio, no supuestos.
+
+La recomendación es tratar los perfiles como un artefacto derivado que se construye después de validar el cuestionario, no antes.
+
+El flujo correcto sería:
+
+1. Definir y validar completamente todas las preguntas del `questionnaire`.
+2. Analizar agentes reales del negocio.
+3. Para cada arquetipo identificado, completar el `questionnaire` una vez y almacenar el resultado.
+
+Los perfiles deben considerarse atajos de configuración, no mecanismos de entrada principales. Un evaluador debería poder utilizarlos o ignorarlos sin que el resultado final cambie.
+
+---
+
+### ¿Deberían los KC ser seleccionables directamente?
+
+No.
+
+La razón es de diseño: los KCs son una clasificación técnica interna, no parte del vocabulario del evaluador.
+
+Un usuario puede saber que:
+
+* Su agente utiliza una base de datos vectorial.
+* Su agente almacena memoria de conversaciones.
+* Su agente consume APIs externas.
+
+Pero no necesariamente sabe que eso corresponde a **KC4.3**, **KC6.3** o cualquier otra clasificación interna.
+
+Los flags constituyen el lenguaje del evaluador; los KCs constituyen el lenguaje del motor de análisis.
+
+La principal excepción es **KC4 (Memory Modules)**. Los subtipos **KC4.1–KC4.6** tienen implicaciones significativamente diferentes (por ejemplo, memoria en sesión, entre usuarios o entre agentes), y el evaluador sí puede proporcionar esa información.
+
+En este caso, el cuestionario debería formular preguntas granulares, por ejemplo:
+
+* ¿La memoria del agente es compartida entre múltiples usuarios?
+* ¿La memoria es compartida entre múltiples agentes?
+
+Las respuestas activarían los flags correspondientes y el sistema inferiría automáticamente el KC4.x aplicable.
+
+El evaluador no necesita conocer la clasificación KC; sus respuestas son suficientes para determinarla.
+
+---
+
+### Herramientas para verificar controles (AgentDojo, Agentic Radar, OWASP)
+
+Estas herramientas no pertenecen al **Paso 5 (Controles)** sino al **Paso 6 (Aseguramiento)**. La diferencia es fundamental:
+
+* **Controles (Paso 5):** medidas implementadas para mitigar riesgos (sandboxing, logging, aislamiento, etc.). Se verifican mediante evidencia de implementación:
+
+  * Revisión de configuraciones
+  * Revisión de código
+  * Inspección de infraestructura
+* **Aseguramiento (Paso 6):** pruebas destinadas a validar que los controles funcionan correctamente frente a escenarios de ataque. Herramientas como AgentDojo, Agentic Radar y OWASP AI Security Benchmarking Suite operan en esta capa.
+
+El problema que señalas es distinto.
+
+Actualmente, `controls_catalog` describe **qué debe implementarse**, pero no define **cómo debe verificarse**. Para el sub-path A (veredicto), el sistema necesita determinar si cada `CTRL-ID` crítico está tanto:
+
+1. Implementado
+2. Verificado
+
+Sin embargo, el JSON actual no define qué significa exactamente "verificado" para cada control.
+
+La mejor estrategia es revisar individualmente cada `CTRL-ID` presente en `critical_controls_by_risk` (los controles que afectan directamente el veredicto) y definir para cada uno:
+
+* Tipo de evidencia aceptable
+* Documento de configuración
+* Registro de auditoría
+* Resultado de escaneo
+* Evidencia de pruebas
+* Declaración formal firmada
+
+Este esfuerzo es manejable porque existen únicamente **27 controles únicos** referenciados por `critical_controls_by_risk` a través de los **10 ASIs** (conteo verificado sobre el knowledge base actual).
+
+Los controles utilizados únicamente en el sub-path B (recomendaciones completas) no requieren el mismo nivel de rigor, ya que no afectan el veredicto final. En esos casos, es suficiente incluirlos en el reporte como recomendaciones o elementos pendientes de evaluación.
+
+---

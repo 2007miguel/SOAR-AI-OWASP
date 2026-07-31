@@ -1,0 +1,14 @@
+id: full_validation
+version: "1.0"
+description: >
+  Pipeline completo de validación OWASP: ingesta → amenazas → riesgos →
+  contexto → controles → aseguramiento manual → veredicto → reporte.
+steps:
+  - module: m1_intake_validation
+  - module: m2_threat_mapper
+  - module: m3_risk_mapper
+  - module: m4_context_escalator
+  - module: m5_control_resolver
+  - assurance_gate: collect_attestations
+  - module: m7_verdict_engine
+  - module: reporter

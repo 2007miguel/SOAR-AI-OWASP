@@ -1,0 +1,72 @@
+API — Ciclo de vida de un caso y arranque del contenedor
+================================================================================
+
+ARRANQUE DEL CONTENEDOR
+--------------------------------------------------------------------------------
+
+main.py corre esta secuencia antes de aceptar cualquier request:
+
+  check_volume() → load() → selfcheck() → KBService → Orchestrator → PostgresAssessmentStore → FastAPI listo
+
+Si el KB no está bien montado o es incoherente, el contenedor falla en ese
+momento con un mensaje claro. Nunca arranca con un KB roto.
+
+Los servicios (kb, orchestrator, store, assurance) se guardan en app.state
+y las rutas los leen desde ahí vía Depends (inyección de dependencias FastAPI).
+
+
+CICLO DE VIDA DE UN CASO (4 endpoints)
+--------------------------------------------------------------------------------
+
+  POST /api/v1/assessments
+    Crea el caso. Corre M1→M2→M3→M4→M5, emite el checklist de controles
+    y guarda el contexto con status = awaiting_assurance.
+    Devuelve: assessment_id + checklist + warnings.
+
+  POST /api/v1/assessments/{id}/attest   (se puede llamar N veces)
+    Agrega attestations para uno o más controles al caso guardado.
+    También acepta incident_response_plan y red_teaming_done.
+    Devuelve: is_ready (True cuando todos los controles críticos están atestados).
+
+  POST /api/v1/assessments/{id}/resume
+    Solo ejecutable cuando is_ready == True.
+    Corre M7 (VerdictEngine) + Reporter y actualiza el caso a status = completed.
+    Devuelve: reporte completo con veredicto APT / APT_WITH_RESTRICTIONS / NOT_APT.
+
+  GET /api/v1/assessments/{id}
+    Devuelve el estado actual del caso.
+    Si status == completed, incluye el reporte completo.
+    Si status == awaiting_assurance, solo devuelve el estado.
+
+
+POR QUÉ DOS CONTENEDORES (engine + db)
+--------------------------------------------------------------------------------
+
+docker-compose.yml levanta ambos servicios. El engine tiene:
+  depends_on:
+    db:
+      condition: service_healthy
+
+Esto hace que el engine espere a que Postgres pase su healthcheck (pg_isready)
+antes de intentar conectarse. Sin esto, el engine fallaría al arrancar porque
+Postgres no estaría listo aún.
+
+El volumen postgres_data hace que los casos persistan entre reinicios del contenedor.
+
+
+EL .env COMO ÚNICA FUENTE DE CONFIGURACIÓN
+--------------------------------------------------------------------------------
+
+Todas las variables de configuración vienen del .env:
+
+  KB_PATH              → ruta al JSON del KB dentro del volumen montado
+  DB_URL               → cadena de conexión a Postgres (ver persistence_db_url.txt)
+  POSTGRES_USER/PASSWORD/DB → credenciales que docker-compose usa para inicializar db
+  LOG_LEVEL            → nivel de logging (INFO por defecto)
+
+Para levantar el sistema:
+  1. cp .env.example .env
+  2. Editar .env con la contraseña y nombre de BD deseados
+  3. docker compose up
+
+================================================================================

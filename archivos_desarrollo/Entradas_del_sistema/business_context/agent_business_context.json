@@ -1,0 +1,67 @@
+{
+  "schema_id": "AGENT_BUSINESS_CONTEXT_V1",
+  "version": "1.0",
+  "description": "Esquema de contexto operativo del agente para v1 del sistema de validación. Define los campos mínimos necesarios para que el pipeline aplique escalaciones de riesgo contextuales, filtre controles por fase y ajuste el perfil de amenaza arquitectural.",
+  "knowledge_base_ref": "owasp_asi_knowledge_base.json",
+  "fields": {
+    "business_domain": {
+      "type": "single_select",
+      "required": true,
+      "description": "Dominio de negocio en el que opera el agente. Determina si aplican escalaciones de riesgo por dominio de alto impacto.",
+      "options": [
+        { "value": "Finance",                 "label": "Finanzas / Banca" },
+        { "value": "Healthcare",              "label": "Salud / Medicina" },
+        { "value": "Education",               "label": "Educación" },
+        { "value": "Critical Infrastructure", "label": "Infraestructura Crítica" },
+        { "value": "Legal",                   "label": "Legal / Jurídico" },
+        { "value": "Law Enforcement",         "label": "Seguridad / Aplicación de la Ley" },
+        { "value": "Retail",                  "label": "Comercio / Retail" },
+        { "value": "Technology",              "label": "Tecnología / Software" },
+        { "value": "Other",                   "label": "Otro" }
+      ],
+      "kb_ref": "verdict_framework.high_risk_business_domains",
+      "pipeline_effect": "Si el valor coincide con un entry en verdict_framework.high_risk_business_domains, el pipeline activa escalación de riesgo: controles críticos adicionales se vuelven obligatorios y el umbral para APT sube."
+    },
+    "architecture_id": {
+      "type": "single_select",
+      "required": true,
+      "description": "Patrón de arquitectura del agente. Selecciona el paquete de recomendaciones de seguridad aplicable; no altera el perfil de amenazas que decide el veredicto.",
+      "options": [
+        { "value": "ARCH-SINGLE",  "label": "Agente único: un solo agente ejecuta todas las tareas de forma independiente" },
+        { "value": "ARCH-CENTRAL", "label": "Multi-agente centralizado: un orquestador coordina y delega a sub-agentes" },
+        { "value": "ARCH-SWARM",   "label": "Swarm / Enjambre: múltiples agentes pares sin coordinador central" }
+      ],
+      "kb_ref": "architecture_types",
+      "pipeline_effect": "Selecciona el paquete de RECOMENDACIONES del nodo architecture_types correspondiente (security_practices y priority_control_domains), más el baseline transversal de ARCH-CROSS que siempre se incluye. NO añade amenazas ni ASI al conjunto que decide el veredicto: el perfil de amenazas se deriva exclusivamente de los capability_flags del wizard vía capability_taxonomy. Las amenazas de coordinación multi-agente (T12,T13,T14) entran por los flags de STEP-6, no por este campo. El campo specific_risks del nodo es solo informativo."
+    },
+    "lifecycle_phases": {
+      "type": "multi_select",
+      "required": true,
+      "description": "Fases del ciclo de vida en las que se evalúa el agente en esta ejecución.",
+      "options": [
+        { "value": "design",  "label": "Diseño / Desarrollo inicial" },
+        { "value": "build",   "label": "Build / Integración y despliegue" },
+        { "value": "runtime", "label": "Producción / Operación en vivo" }
+      ],
+      "kb_ref": "controls_catalog[*].applicable_lifecycle_phases",
+      "pipeline_effect": "Filtra el conjunto de controles del controls_catalog que aplican a esta evaluación. Solo se verifican y recomiendan controles relevantes para las fases seleccionadas."
+    }
+  },
+  "completeness_validation": {
+    "description": "Reglas de validación antes de iniciar el pipeline. Los tres campos son required. El pipeline debe rechazar la ejecución si falta cualquiera de ellos.",
+    "required_fields": ["business_domain", "architecture_id", "lifecycle_phases"],
+    "pipeline_dependencies": {
+      "business_domain":  "verdict_framework.high_risk_business_domains",
+      "architecture_id":  "architecture_types",
+      "lifecycle_phases": "controls_catalog[*].applicable_lifecycle_phases"
+    },
+    "cross_input_validations": [
+      {
+        "rule": "Si architecture_id es ARCH-CENTRAL o ARCH-SWARM, el wizard debe tener multi_agent_architecture=true",
+        "fields_involved": ["architecture_id"],
+        "wizard_flag": "multi_agent_architecture",
+        "action_on_conflict": "warning: inconsistencia entre arquitectura declarada y capability_flags del wizard"
+      }
+    ]
+  }
+}
