@@ -1,0 +1,5 @@
+# Install both source modules (editable) so their runtime deps are pulled in,
+# then add respx for mocking outbound httpx calls.
+-e ../modulo_engine
+-e ../modulo_assurance_coordinator
+respx>=0.21
