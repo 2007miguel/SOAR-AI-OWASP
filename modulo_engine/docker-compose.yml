@@ -4,11 +4,16 @@ services:
     ports:
       - "8000:8000"
     env_file: .env
+    environment:
+      ASSURANCE_MODE: coordinator
+      COORDINATOR_URL: http://coordinator:8100
     volumes:
       - ./kb_volume:/app/kb:ro
     depends_on:
       db:
         condition: service_healthy
+      coordinator:
+        condition: service_started
     restart: on-failure
 
   # Plano de aseguramiento (M6). Comparte la MISMA BD (db/soar_db) creando sus

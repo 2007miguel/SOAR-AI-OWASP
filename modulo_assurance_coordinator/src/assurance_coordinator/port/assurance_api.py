@@ -137,11 +137,13 @@ def submit_attestations(
     )
 
     # Fire the resume callback only on the pending → ready transition. The
-    # callback runs in the background so a slow/unreachable engine never blocks
-    # the attestation response.
+    # bundle is built synchronously here (inside the request) so the background
+    # task needs no DB access. The callback runs in the background so a slow or
+    # unreachable engine never blocks the attestation response.
     if is_ready and not was_ready:
         store.mark_ready(assessment_id)
-        background_tasks.add_task(_callback_resume, engine_url, assessment_id)
+        bundle = partial.build_bundle(assessment_id)
+        background_tasks.add_task(_callback_resume, engine_url, assessment_id, bundle)
 
     return {
         "assessment_id": assessment_id,
@@ -178,12 +180,12 @@ def get_status(
 # ── Internal callback ───────────────────────────────────────────────────────
 
 
-def _callback_resume(engine_url: str, assessment_id: str) -> None:
-    """POST to the engine's /resume endpoint to continue the pipeline."""
+def _callback_resume(engine_url: str, assessment_id: str, bundle) -> None:
+    """POST the EvidenceBundle to the engine's /resume endpoint to continue the pipeline."""
     url = f"{engine_url}/api/v1/assessments/{assessment_id}/resume"
     try:
         with httpx.Client(timeout=30.0) as client:
-            resp = client.post(url)
+            resp = client.post(url, json=bundle.model_dump(mode="json"))
             resp.raise_for_status()
         logger.info(
             "Resume callback sent — assessment=%s status=%d",

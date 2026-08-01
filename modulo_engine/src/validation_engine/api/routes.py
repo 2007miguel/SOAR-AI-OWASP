@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
 from ..contracts import AssessmentContext
 from ..contracts.inputs import InputsLayer
-from ..contracts.assurance import Attestation
+from ..contracts.assurance import Attestation, ToolResult
 from ..contracts.enums import Status
 from ..orchestrator import Orchestrator
 from ..persistence import AssessmentStore
-from ..assurance import ManualAdapter
+from ..assurance import ManualAdapter, CoordinatorAdapter
 from ..kb.service import KBService
 from ..modules.reporter import build_report
 from .dto import (
@@ -16,6 +16,7 @@ from .dto import (
     AttestResponse,
     AssessmentStatusResponse,
     ChecklistItemOut,
+    EvidenceBundleIn,
     StartAssessmentRequest,
     StartAssessmentResponse,
 )
@@ -34,8 +35,11 @@ def _store(request: Request) -> AssessmentStore:
 def _kb(request: Request) -> KBService:
     return request.app.state.kb
 
-def _assurance(request: Request) -> ManualAdapter:
+def _assurance(request: Request) -> ManualAdapter | CoordinatorAdapter:
     return request.app.state.assurance
+
+def _assurance_mode(request: Request) -> str:
+    return request.app.state.assurance_mode
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -87,12 +91,30 @@ def attest(
     assessment_id: str,
     body: AttestRequest,
     store: AssessmentStore = Depends(_store),
-    assurance: ManualAdapter = Depends(_assurance),
+    assurance: ManualAdapter | CoordinatorAdapter = Depends(_assurance),
+    assurance_mode: str = Depends(_assurance_mode),
 ) -> AttestResponse:
-    """Submit attestations for one or more controls. Can be called multiple times."""
+    """Submit attestations for one or more controls. Can be called multiple times.
+
+    In coordinator mode the payload is forwarded to the coordinator; the engine
+    does not write to its own store. In manual mode (Etapa 0) the engine handles
+    attestations directly.
+    """
     ctx = _load_or_404(store, assessment_id)
     _require_status(ctx, Status.AWAITING_ASSURANCE)
 
+    if assurance_mode == "coordinator":
+        result = assurance.forward_attestation(
+            assessment_id,
+            body.model_dump(mode="json"),
+        )
+        return AttestResponse(
+            assessment_id=assessment_id,
+            status=ctx.status.value,
+            is_ready=result.get("is_ready", False),
+        )
+
+    # ── Manual mode (Etapa 0): write directly to ctx ──────────────────────────
     for ctrl_id, att in body.attestations.items():
         ctx.assurance.attestations[ctrl_id] = Attestation(
             status=att.status,
@@ -128,13 +150,44 @@ def attest(
 @router.post("/assessments/{assessment_id}/resume")
 def resume_assessment(
     assessment_id: str,
+    body: EvidenceBundleIn | None = Body(default=None),
     orch: Orchestrator = Depends(_orch),
     store: AssessmentStore = Depends(_store),
-    assurance: ManualAdapter = Depends(_assurance),
+    assurance: ManualAdapter | CoordinatorAdapter = Depends(_assurance),
+    assurance_mode: str = Depends(_assurance_mode),
 ) -> dict:
-    """Resume the pipeline after attestations. Runs M7 + Reporter and returns the report."""
+    """Resume the pipeline after attestations. Runs M7 + Reporter and returns the report.
+
+    In coordinator mode the EvidenceBundle (sent by the coordinator's callback)
+    is required — it populates ctx.assurance before M7 runs. In manual mode the
+    attestations are already in ctx.assurance (written by /attest) and no body is
+    expected.
+    """
     ctx = _load_or_404(store, assessment_id)
     _require_status(ctx, Status.AWAITING_ASSURANCE)
+
+    if assurance_mode == "coordinator":
+        if body is None:
+            raise HTTPException(
+                status_code=422,
+                detail="EvidenceBundle body is required in coordinator mode",
+            )
+        # Populate ctx.assurance from the bundle sent by the coordinator
+        for ctrl_id, att_in in body.attestations.items():
+            ctx.assurance.attestations[ctrl_id] = Attestation(
+                status=att_in.status,
+                evidence=att_in.evidence,
+                assurance_method=att_in.assurance_method,
+            )
+        ctx.assurance.tool_results = [
+            ToolResult(**tr.model_dump()) for tr in body.tool_results
+        ]
+        ctx.assurance.red_teaming_done = body.red_teaming_done
+        ctx.assurance.incident_response_plan = body.incident_response_plan
+        ctx.assurance.assurance_methods_used = body.assurance_methods_used
+        ctx.assurance.red_teaming_critical_findings = body.red_teaming_critical_findings
+        ctx.assurance.supply_chain_unverified = body.supply_chain_unverified
+        ctx.assurance.production_access = body.production_access
 
     if not assurance.is_ready(ctx):
         raise HTTPException(

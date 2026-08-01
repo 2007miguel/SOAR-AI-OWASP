@@ -31,6 +31,28 @@ class AttestRequest(BaseModel):
     production_access: bool | None = None
 
 
+class ToolResultIn(BaseModel):
+    connector: str
+    control_id: str | None = None
+    asi: str | None = None
+    verdict: str
+    findings: list[dict] = []
+    raw_ref: str | None = None
+
+
+class EvidenceBundleIn(BaseModel):
+    """Body sent by the coordinator's resume callback. Populates ctx.assurance before M7."""
+    assessment_id: str
+    attestations: dict[str, AttestationInput]
+    tool_results: list[ToolResultIn] = []
+    red_teaming_done: bool = False
+    incident_response_plan: bool = False
+    assurance_methods_used: list[str] = []
+    red_teaming_critical_findings: bool = False
+    supply_chain_unverified: bool = False
+    production_access: bool = False
+
+
 # ── Response DTOs ─────────────────────────────────────────────────────────────
 
 class ChecklistItemOut(BaseModel):

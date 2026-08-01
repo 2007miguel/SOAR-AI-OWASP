@@ -18,7 +18,7 @@ from .kb import (
     selfcheck,
 )
 from .orchestrator import Orchestrator, load_playbook
-from .assurance import ManualAdapter
+from .assurance import ManualAdapter, CoordinatorAdapter
 from .persistence import PostgresAssessmentStore
 from .api import router
 
@@ -48,7 +48,17 @@ async def lifespan(app: FastAPI):
 
     # ── Build services ────────────────────────────────────────────────────────
     playbook = load_playbook(_PLAYBOOK_PATH)
-    assurance = ManualAdapter(kb_service)
+
+    if settings.assurance_mode == "coordinator":
+        if not settings.coordinator_url:
+            logger.critical("ASSURANCE_MODE=coordinator requires COORDINATOR_URL to be set")
+            raise SystemExit(1)
+        assurance = CoordinatorAdapter(kb_service, settings.coordinator_url)
+        logger.info("Assurance mode: coordinator — %s", settings.coordinator_url)
+    else:
+        assurance = ManualAdapter(kb_service)
+        logger.info("Assurance mode: manual (Etapa 0)")
+
     orchestrator = Orchestrator(playbook, kb_service, assurance)
     store = PostgresAssessmentStore(settings.db_url)
 
@@ -56,6 +66,7 @@ async def lifespan(app: FastAPI):
     app.state.orchestrator = orchestrator
     app.state.store = store
     app.state.assurance = assurance
+    app.state.assurance_mode = settings.assurance_mode
 
     logger.info("Engine ready — playbook '%s'", playbook.id)
     yield
