@@ -1,0 +1,364 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  background: #f0f0f0;
+  color: #222;
+}
+
+.app {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+.app-header {
+  padding: 1rem 0 1.25rem;
+  border-bottom: 2px solid #333;
+  margin-bottom: 1.5rem;
+}
+
+.app-header h1 {
+  font-size: 1.5rem;
+}
+
+.subtitle {
+  font-size: 0.85rem;
+  color: #666;
+  margin-top: 0.25rem;
+}
+
+.aid {
+  font-size: 0.8rem;
+  color: #555;
+  margin-top: 0.5rem;
+}
+
+.aid code {
+  background: #e8e8e8;
+  padding: 0.1rem 0.4rem;
+  font-family: monospace;
+  font-size: 0.85rem;
+}
+
+/* ── Cards ─────────────────────────────────────────────────────────────────── */
+
+.card {
+  background: white;
+  border: 1px solid #ccc;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.card h2 {
+  font-size: 1rem;
+  margin-bottom: 0.75rem;
+  border-bottom: 1px solid #ddd;
+  padding-bottom: 0.4rem;
+}
+
+.card h3 {
+  font-size: 0.9rem;
+  margin-bottom: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+/* ── Buttons ────────────────────────────────────────────────────────────────── */
+
+.btn-primary {
+  cursor: pointer;
+  padding: 0.45rem 1.1rem;
+  background: #333;
+  color: white;
+  border: none;
+  font-size: 0.9rem;
+}
+
+.btn-primary:disabled {
+  background: #aaa;
+  cursor: default;
+}
+
+.btn-secondary {
+  cursor: pointer;
+  padding: 0.4rem 0.9rem;
+  background: white;
+  color: #333;
+  border: 1px solid #333;
+  font-size: 0.85rem;
+}
+
+/* ── Forms ──────────────────────────────────────────────────────────────────── */
+
+.form-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.6rem;
+}
+
+.form-row label {
+  min-width: 160px;
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.form-row select,
+.form-row input[type="text"] {
+  border: 1px solid #ccc;
+  padding: 0.3rem 0.5rem;
+  font-size: 0.85rem;
+  min-width: 220px;
+}
+
+/* ── Flag groups ────────────────────────────────────────────────────────────── */
+
+.flag-section {
+  margin-bottom: 1rem;
+  border: 1px solid #ddd;
+  padding: 0.6rem 0.75rem;
+}
+
+.flag-section-title {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #555;
+  margin-bottom: 0.5rem;
+}
+
+.flags-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.3rem 1rem;
+}
+
+.flags-grid label {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.hint {
+  font-size: 0.75rem;
+  color: #777;
+  font-style: italic;
+  margin-bottom: 0.5rem;
+}
+
+/* ── Lifecycle checkboxes ───────────────────────────────────────────────────── */
+
+.lifecycle-row {
+  display: flex;
+  gap: 1.2rem;
+  flex-wrap: wrap;
+}
+
+.lifecycle-row label {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+/* ── Checklist table ────────────────────────────────────────────────────────── */
+
+.checklist-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+  margin-bottom: 0.75rem;
+}
+
+.checklist-table th {
+  background: #f5f5f5;
+  border: 1px solid #ccc;
+  padding: 0.4rem 0.5rem;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.checklist-table td {
+  border: 1px solid #ddd;
+  padding: 0.35rem 0.5rem;
+  vertical-align: middle;
+}
+
+.checklist-table select,
+.checklist-table input[type="text"] {
+  border: 1px solid #ccc;
+  padding: 0.2rem 0.35rem;
+  font-size: 0.8rem;
+  width: 100%;
+}
+
+.badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  background: #eee;
+  border: 1px solid #bbb;
+  padding: 0.05rem 0.35rem;
+  margin: 0.1rem;
+  white-space: nowrap;
+}
+
+/* ── Global flags section ───────────────────────────────────────────────────── */
+
+.global-flags {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.4rem 2rem;
+  padding: 0.5rem 0;
+}
+
+.global-flags label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.signal-warning {
+  font-size: 0.75rem;
+  color: #8a3000;
+  background: #fff3e0;
+  border: 1px solid #e0a000;
+  padding: 0.3rem 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+/* ── Is-ready status ────────────────────────────────────────────────────────── */
+
+.status-ready {
+  display: inline-block;
+  padding: 0.3rem 0.7rem;
+  background: #d4edda;
+  border: 1px solid #28a745;
+  color: #155724;
+  font-size: 0.85rem;
+  margin-top: 0.5rem;
+}
+
+.status-pending {
+  display: inline-block;
+  padding: 0.3rem 0.7rem;
+  background: #fff9c4;
+  border: 1px solid #e0a800;
+  color: #664d00;
+  font-size: 0.85rem;
+  margin-top: 0.5rem;
+}
+
+.waiting-verdict {
+  padding: 0.5rem;
+  background: #e8f4fd;
+  border: 1px solid #90caf9;
+  color: #0d47a1;
+  font-size: 0.85rem;
+  margin-top: 0.5rem;
+}
+
+/* ── Verdict panel ──────────────────────────────────────────────────────────── */
+
+.verdict-header {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.verdict-APT {
+  font-size: 1.8rem;
+  font-weight: 700;
+  color: #155724;
+}
+
+.verdict-APT_WITH_RESTRICTIONS {
+  font-size: 1.8rem;
+  font-weight: 700;
+  color: #664d00;
+}
+
+.verdict-NOT_APT {
+  font-size: 1.8rem;
+  font-weight: 700;
+  color: #721c24;
+}
+
+.verdict-rationale {
+  font-size: 0.9rem;
+  color: #444;
+  margin-bottom: 0.75rem;
+  line-height: 1.5;
+}
+
+.verdict-section-title {
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #666;
+  margin: 0.75rem 0 0.35rem;
+}
+
+.blocking-list {
+  list-style: disc;
+  padding-left: 1.25rem;
+  font-size: 0.85rem;
+  color: #721c24;
+}
+
+.warn-list {
+  list-style: disc;
+  padding-left: 1.25rem;
+  font-size: 0.85rem;
+  color: #664d00;
+}
+
+.stats-row {
+  display: flex;
+  gap: 1.5rem;
+  font-size: 0.85rem;
+  margin-bottom: 0.5rem;
+}
+
+.stats-row span {
+  padding: 0.2rem 0.5rem;
+  background: #f5f5f5;
+  border: 1px solid #ccc;
+}
+
+/* ── Error panel ────────────────────────────────────────────────────────────── */
+
+.error-panel {
+  background: #fff0f0;
+  border: 1px solid #c00;
+  padding: 1rem;
+}
+
+.error-panel h2 {
+  color: #a00;
+  margin-bottom: 0.5rem;
+}
+
+.error-panel p {
+  font-size: 0.85rem;
+  margin-bottom: 0.75rem;
+  font-family: monospace;
+}
+
+/* ── Utilities ──────────────────────────────────────────────────────────────── */
+
+.mt { margin-top: 0.75rem; }
+.mb { margin-bottom: 0.75rem; }
+.flex-row { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.section-divider { border: none; border-top: 1px solid #ddd; margin: 0.75rem 0; }
