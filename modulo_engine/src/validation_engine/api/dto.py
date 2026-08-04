@@ -55,11 +55,38 @@ class EvidenceBundleIn(BaseModel):
 
 # ── Response DTOs ─────────────────────────────────────────────────────────────
 
+class AsiDetail(BaseModel):
+    asi_id: str
+    name: str
+    scope: str | None = None
+    llm_top10_mapping: list[str] = []
+    aivss_core_risk: str | None = None
+
+
+class ThreatDetail(BaseModel):
+    threat_id: str
+    name: str
+    description: str | None = None
+
+
+class AssurMethodDetail(BaseModel):
+    method_id: str
+    name: str
+    description: str | None = None
+    tools: list[dict] = []
+
+
 class ChecklistItemOut(BaseModel):
     control_id: str
-    why: list[str]
+    control_name: str = ""
+    control_description: str = ""
+    why: list[str]                              # ASI-IDs that require this control
+    why_detail: list[AsiDetail] = []            # enriched ASI info
+    threats: list[str]                          # T-IDs that activate those ASIs
+    threats_detail: list[ThreatDetail] = []     # enriched threat info
     category: str
     suggested_assur: list[str]
+    suggested_assur_detail: list[AssurMethodDetail] = []  # enriched assurance info
 
 
 class StartAssessmentResponse(BaseModel):

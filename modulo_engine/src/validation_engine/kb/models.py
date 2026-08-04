@@ -17,6 +17,7 @@ class CapabilityTaxonomy(BaseModel):
 class ThreatEntry(BaseModel):
     threat_id: str
     name: str
+    description: str | None = None
     maps_to_asi: list[str]  # Appendix A — source of truth for T-ID → ASI
 
 
@@ -32,6 +33,18 @@ class Control(BaseModel):
     lifecycle_phases: list[str] = []  # injected from parent domain by loader
 
 
+class RiskEntry(BaseModel):
+    risk_id: str
+    title: str                          # JSON uses "title", not "name"
+    scope: str | None = None
+    llm_top10_mapping: list[str] = []   # JSON uses a list
+    aivss_core_risk: str | None = None
+
+
+class RiskCatalog(BaseModel):
+    risks: list[RiskEntry]
+
+
 class ControlDomain(BaseModel):
     domain_id: str
     applicable_lifecycle_phases: list[str] = []
@@ -44,6 +57,9 @@ class ControlsCatalog(BaseModel):
 
 class AssuranceMethod(BaseModel):
     method_id: str
+    name: str = ""
+    description: str | None = None
+    tools: list[dict] = []
     covers_risks: list[str]
 
 
@@ -96,6 +112,7 @@ class KnowledgeBase(BaseModel):
 
     metadata: KBMetadata
     capability_taxonomy: CapabilityTaxonomy
+    risk_catalog: RiskCatalog
     threat_catalog: ThreatCatalog
     controls_catalog: ControlsCatalog
     assurance_methods: AssuranceMethods

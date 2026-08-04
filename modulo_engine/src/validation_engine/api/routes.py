@@ -12,6 +12,8 @@ from ..assurance import ManualAdapter, CoordinatorAdapter
 from ..kb.service import KBService
 from ..modules.reporter import build_report
 from .dto import (
+    AsiDetail,
+    AssurMethodDetail,
     AttestRequest,
     AttestResponse,
     AssessmentStatusResponse,
@@ -19,9 +21,78 @@ from .dto import (
     EvidenceBundleIn,
     StartAssessmentRequest,
     StartAssessmentResponse,
+    ThreatDetail,
 )
 
 router = APIRouter()
+
+
+# ── KB enrichment helpers ─────────────────────────────────────────────────────
+
+def _build_checklist_item(item, asi_trace: dict, kb: "KBService") -> ChecklistItemOut:
+    ctrl = kb.control_by_id(item.control_id)
+    threats_ids = sorted({t for asi in item.why for t in asi_trace.get(asi, [])})
+
+    why_detail = []
+    for asi_id in item.why:
+        risk = kb.risk_by_id(asi_id)
+        why_detail.append(AsiDetail(
+            asi_id=asi_id,
+            name=risk.title if risk else asi_id,
+            scope=risk.scope if risk else None,
+            llm_top10_mapping=risk.llm_top10_mapping if risk else [],
+            aivss_core_risk=risk.aivss_core_risk if risk else None,
+        ))
+
+    threats_detail = []
+    for t_id in threats_ids:
+        threat = kb.threat_by_id(t_id)
+        if threat:
+            threats_detail.append(ThreatDetail(
+                threat_id=t_id,
+                name=threat.name,
+                description=threat.description,
+            ))
+
+    assur_detail = []
+    for assur_id in item.suggested_assur:
+        method = kb.assurance_method_by_id(assur_id)
+        if method:
+            assur_detail.append(AssurMethodDetail(
+                method_id=assur_id,
+                name=method.name,
+                description=method.description,
+                tools=method.tools,
+            ))
+
+    return ChecklistItemOut(
+        control_id=item.control_id,
+        control_name=ctrl.name if ctrl else "",
+        control_description=ctrl.description if ctrl else "",
+        why=item.why,
+        why_detail=why_detail,
+        threats=threats_ids,
+        threats_detail=threats_detail,
+        category=item.category,
+        suggested_assur=item.suggested_assur,
+        suggested_assur_detail=assur_detail,
+    )
+
+
+def _enrich_report(report: dict, kb: "KBService") -> dict:
+    risks_detail = []
+    for r in report.get("active_risks", []):
+        risk = kb.risk_by_id(r)
+        risks_detail.append({"risk_id": r, "name": risk.title if risk else r})
+    report["active_risks_detail"] = risks_detail
+
+    threats_detail = []
+    for t in report.get("active_threats", []):
+        threat = kb.threat_by_id(t)
+        threats_detail.append({"threat_id": t, "name": threat.name if threat else t})
+    report["active_threats_detail"] = threats_detail
+
+    return report
 
 
 # ── Dependency helpers ────────────────────────────────────────────────────────
@@ -65,15 +136,8 @@ def create_assessment(
     ctx = orch.run(ctx)
     store.save(ctx)
 
-    checklist = [
-        ChecklistItemOut(
-            control_id=item.control_id,
-            why=item.why,
-            category=item.category,
-            suggested_assur=item.suggested_assur,
-        )
-        for item in ctx.assurance.checklist
-    ]
+    asi_trace = ctx.analysis.asi_trace
+    checklist = [_build_checklist_item(item, asi_trace, kb) for item in ctx.assurance.checklist]
 
     errors = ctx.analysis.validation.errors if ctx.analysis.validation else []
 
@@ -153,6 +217,7 @@ def resume_assessment(
     body: EvidenceBundleIn | None = Body(default=None),
     orch: Orchestrator = Depends(_orch),
     store: AssessmentStore = Depends(_store),
+    kb: KBService = Depends(_kb),
     assurance: ManualAdapter | CoordinatorAdapter = Depends(_assurance),
     assurance_mode: str = Depends(_assurance_mode),
 ) -> dict:
@@ -197,17 +262,18 @@ def resume_assessment(
 
     ctx = orch.resume(ctx)
     store.update(ctx)
-    return build_report(ctx)
+    return _enrich_report(build_report(ctx), kb)
 
 
 @router.get("/assessments/{assessment_id}", response_model=AssessmentStatusResponse)
 def get_assessment(
     assessment_id: str,
     store: AssessmentStore = Depends(_store),
+    kb: KBService = Depends(_kb),
 ) -> AssessmentStatusResponse:
     """Get the current status and, if completed, the full report."""
     ctx = _load_or_404(store, assessment_id)
-    report = build_report(ctx) if ctx.status == Status.COMPLETED else None
+    report = _enrich_report(build_report(ctx), kb) if ctx.status == Status.COMPLETED else None
 
     return AssessmentStatusResponse(
         assessment_id=ctx.assessment_id,

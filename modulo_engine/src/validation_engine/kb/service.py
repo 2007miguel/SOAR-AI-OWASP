@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .models import Control, KnowledgeBase, OperationalCapability
+from .models import AssuranceMethod, Control, KnowledgeBase, OperationalCapability, RiskEntry, ThreatEntry
 
 
 class KBService:
@@ -12,6 +12,8 @@ class KBService:
         # Build lookup indexes at construction time to keep queries O(1) / O(n) simple
         self._threats_by_id = {t.threat_id: t for t in kb.threat_catalog.threats}
         self._steps_by_id = {s.step_id: s for s in kb.capability_taxonomy.steps}
+        self._risks_by_id = {r.risk_id: r for r in kb.risk_catalog.risks}
+        self._assurance_by_id = {m.method_id: m for m in kb.assurance_methods.methods}
         self._all_controls: list[Control] = [
             ctrl
             for domain in kb.controls_catalog.domains
@@ -100,6 +102,21 @@ class KBService:
             for m in self._kb.assurance_methods.methods
             if asi_id in m.covers_risks
         ]
+
+    # ── Risk / ASI catalog ────────────────────────────────────────────────────
+
+    def risk_by_id(self, risk_id: str) -> RiskEntry | None:
+        return self._risks_by_id.get(risk_id)
+
+    # ── Threat catalog ────────────────────────────────────────────────────────
+
+    def threat_by_id(self, threat_id: str) -> ThreatEntry | None:
+        return self._threats_by_id.get(threat_id)
+
+    # ── Assurance methods ─────────────────────────────────────────────────────
+
+    def assurance_method_by_id(self, method_id: str) -> AssuranceMethod | None:
+        return self._assurance_by_id.get(method_id)
 
     # ── Meta ───────────────────────────────────────────────────────────────────
 
